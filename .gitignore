@@ -1,0 +1,48 @@
+# =========================
+# Python cache / build
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# =========================
+# IDE / OS files
+# =========================
+.vscode/
+.DS_Store
+Thumbs.db
+
+# =========================
+# Logs / temporary files
+# =========================
+*.log
+*.tmp
+*.temp
+
+# =========================
+# ML model artifacts (large)
+# =========================
+*.h5
+*.hdf5
+*.keras
+*.pt
+*.pth
+*.onnx
+checkpoints/
+runs/
+logs/
+
+# =========================
+# Dataset files to skip
+# Keep processed data (e.g. sit.csv, stand.csv),
+# ignore raw and test exports.
+# =========================
+data/*_raw*.csv
+data/test*.csv
