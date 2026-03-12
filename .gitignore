@@ -44,5 +44,4 @@ logs/
 # Keep processed data (e.g. sit.csv, stand.csv),
 # ignore raw and test exports.
 # =========================
-data/*_raw*.csv
-data/test*.csv
+
