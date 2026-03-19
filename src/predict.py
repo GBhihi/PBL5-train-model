@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from tensorflow.keras.models import load_model
+import torch
 
+from src.model import build_model
 from src.preprocess import align_feature_dims, apply_hampel, butterworth_lowpass, load_csi_csv, normalize_global
 from src.spectrogram import convert_segments_to_spectrogram
 from src.window import create_segments
@@ -41,8 +42,24 @@ def predict_action(
 	x: np.ndarray,
 	class_names: tuple[str, str] = ("sit", "stand"),
 ) -> dict[str, object]:
-	model = load_model(model_path)
-	probs = model.predict(x, verbose=0)
+	checkpoint = torch.load(model_path, map_location="cpu")
+	model_type = checkpoint.get("model_type", "cnn2d")
+	input_shape = tuple(checkpoint["input_shape"])
+
+	if model_type == "cnn2d":
+		x = np.transpose(x, (0, 3, 1, 2))
+
+	model = build_model(model_type=model_type, input_shape=input_shape, num_classes=len(class_names))
+	state_dict = checkpoint.get("model") or checkpoint.get("state_dict")
+	if state_dict is None:
+		raise KeyError("Checkpoint missing model weights key: expected 'model' or 'state_dict'.")
+	model.load_state_dict(state_dict)
+	model.eval()
+
+	with torch.no_grad():
+		tensor_x = torch.from_numpy(x.astype(np.float32))
+		logits = model(tensor_x)
+		probs = torch.softmax(logits, dim=1).cpu().numpy()
 
 	avg_prob = probs.mean(axis=0)
 	pred_idx = int(np.argmax(avg_prob))

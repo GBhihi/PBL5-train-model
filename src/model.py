@@ -1,45 +1,69 @@
 from __future__ import annotations
 
-from tensorflow.keras.layers import Conv1D, Conv2D, Dense, Dropout, Flatten, LSTM, MaxPooling1D, MaxPooling2D
-from tensorflow.keras.models import Sequential
+import torch
+from torch import nn
 
 
-def create_cnn2d_model(input_shape: tuple[int, ...], num_classes: int = 2) -> Sequential:
-	model = Sequential(
-		[
-			Conv2D(32, (3, 3), activation="relu", input_shape=input_shape),
-			MaxPooling2D((2, 2)),
-			Conv2D(64, (3, 3), activation="relu"),
-			MaxPooling2D((2, 2)),
-			Flatten(),
-			Dense(128, activation="relu"),
-			Dense(num_classes, activation="softmax"),
-		]
-	)
-	return model
+class Cnn2dClassifier(nn.Module):
+	def __init__(self, in_channels: int, num_classes: int = 2):
+		super().__init__()
+		self.features = nn.Sequential(
+			nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
+			nn.ReLU(),
+			nn.MaxPool2d(2),
+			nn.Conv2d(32, 64, kernel_size=3, padding=1),
+			nn.ReLU(),
+			nn.MaxPool2d(2),
+			nn.AdaptiveAvgPool2d((4, 4)),
+		)
+		self.classifier = nn.Sequential(
+			nn.Flatten(),
+			nn.Linear(64 * 4 * 4, 128),
+			nn.ReLU(),
+			nn.Linear(128, num_classes),
+		)
+
+	def forward(self, x: torch.Tensor) -> torch.Tensor:
+		x = self.features(x)
+		return self.classifier(x)
 
 
-def create_lstmcnn_model(input_shape: tuple[int, ...], num_classes: int = 2) -> Sequential:
-	model = Sequential(
-		[
-			Conv1D(64, kernel_size=5, activation="relu", input_shape=input_shape),
-			MaxPooling1D(pool_size=2),
-			Conv1D(128, kernel_size=3, activation="relu"),
-			MaxPooling1D(pool_size=2),
-			LSTM(64),
-			Dropout(0.5),
-			Dense(64, activation="relu"),
-			Dense(num_classes, activation="softmax"),
-		]
-	)
-	return model
+class LstmCnnClassifier(nn.Module):
+	def __init__(self, feature_dim: int, num_classes: int = 2):
+		super().__init__()
+		self.conv = nn.Sequential(
+			nn.Conv1d(feature_dim, 64, kernel_size=5, padding=2),
+			nn.ReLU(),
+			nn.MaxPool1d(kernel_size=2),
+			nn.Conv1d(64, 128, kernel_size=3, padding=1),
+			nn.ReLU(),
+			nn.MaxPool1d(kernel_size=2),
+		)
+		self.lstm = nn.LSTM(input_size=128, hidden_size=64, batch_first=True)
+		self.classifier = nn.Sequential(
+			nn.Dropout(0.5),
+			nn.Linear(64, 64),
+			nn.ReLU(),
+			nn.Linear(64, num_classes),
+		)
+
+	def forward(self, x: torch.Tensor) -> torch.Tensor:
+		# x: (batch, time, feature_dim)
+		x = x.transpose(1, 2)
+		x = self.conv(x)
+		x = x.transpose(1, 2)
+		output, _ = self.lstm(x)
+		last_step = output[:, -1, :]
+		return self.classifier(last_step)
 
 
-def build_model(model_type: str, input_shape: tuple[int, ...], num_classes: int = 2) -> Sequential:
+def build_model(model_type: str, input_shape: tuple[int, ...], num_classes: int = 2) -> nn.Module:
 	key = model_type.lower()
 	if key == "cnn2d":
-		return create_cnn2d_model(input_shape=input_shape, num_classes=num_classes)
+		in_channels = input_shape[-1]
+		return Cnn2dClassifier(in_channels=in_channels, num_classes=num_classes)
 	if key == "lstmcnn":
-		return create_lstmcnn_model(input_shape=input_shape, num_classes=num_classes)
+		feature_dim = input_shape[-1]
+		return LstmCnnClassifier(feature_dim=feature_dim, num_classes=num_classes)
 	raise ValueError(f"Unsupported model_type: {model_type}")
 
