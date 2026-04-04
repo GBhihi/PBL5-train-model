@@ -42,6 +42,21 @@ def align_feature_dims(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.nda
 	return a[:, :feature_dim], b[:, :feature_dim]
 
 
+def align_feature_dims_multi(*arrays: np.ndarray) -> tuple[np.ndarray, ...]:
+	"""Align multiple CSI arrays by truncating all to the smallest feature dimension.
+
+	Returns a tuple with arrays in the same order as provided, each truncated
+	so they share the same second dimension length.
+
+	Example: a, b, c = align_feature_dims_multi(a, b, c)
+	"""
+	if not arrays:
+		raise ValueError("No arrays provided to align_feature_dims_multi")
+	feature_dims = [arr.shape[1] for arr in arrays]
+	min_dim = min(feature_dims)
+	return tuple(arr[:, :min_dim] for arr in arrays)
+
+
 def hampel_filter_1d(signal: np.ndarray, window_size: int = 5, n_sigmas: float = 3.0) -> np.ndarray:
 	"""Remove outliers in one-dimensional signal using Hampel filter."""
 	filtered = signal.copy()
