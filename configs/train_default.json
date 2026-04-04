@@ -1,6 +1,7 @@
 {
   "model_type": "cnn2d",
   "sit_path": "data/raw/sit.csv",
+  "walk_path": "data/raw/walk.csv",
   "stand_path": "data/raw/stand.csv",
   "window_size": 600,
   "step": 200,

@@ -19,7 +19,7 @@ except Exception:
 
 from src.evaluate import evaluate_classification
 from src.model import build_model
-from src.preprocess import align_feature_dims, apply_hampel, butterworth_lowpass, load_csi_csv, normalize_global
+from src.preprocess import align_feature_dims, align_feature_dims_multi, apply_hampel, butterworth_lowpass, load_csi_csv, normalize_global
 from src.spectrogram import convert_segments_to_spectrogram
 from src.window import create_segments
 
@@ -46,6 +46,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--model-type", choices=["cnn2d", "lstmcnn"], default="cnn2d")
 	parser.add_argument("--sit-path", default="data/raw/sit.csv")
 	parser.add_argument("--stand-path", default="data/raw/stand.csv")
+	parser.add_argument("--walk-path", default="data/raw/walk.csv")
 	parser.add_argument("--window-size", type=int, default=600)
 	parser.add_argument("--step", type=int, default=200)
 	parser.add_argument("--cutoff", type=float, default=0.1)
@@ -156,22 +157,29 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	print("Loading CSI files...")
 	sit = load_csi_csv(args.sit_path)
 	stand = load_csi_csv(args.stand_path)
-	sit, stand = align_feature_dims(sit, stand)
+	walk = load_csi_csv(args.walk_path)
+
+	# Align feature dimensions across all classes by truncating to smallest feature dim
+	sit, stand, walk = align_feature_dims_multi(sit, stand, walk)
 
 	if args.use_hampel:
 		print("Applying Hampel filter...")
 		sit = apply_hampel(sit)
 		stand = apply_hampel(stand)
+		walk = apply_hampel(walk)
 
 	print("Applying Butterworth filter...")
 	sit = butterworth_lowpass(sit, cutoff=args.cutoff)
 	stand = butterworth_lowpass(stand, cutoff=args.cutoff)
+	walk = butterworth_lowpass(walk, cutoff=args.cutoff)
 
 	x_sit, y_sit = create_segments(sit, 0, window_size=args.window_size, step=args.step)
 	x_stand, y_stand = create_segments(stand, 1, window_size=args.window_size, step=args.step)
+	# walk uses label index 2
+	x_walk, y_walk = create_segments(walk, 2, window_size=args.window_size, step=args.step)
 
-	x = np.vstack((x_sit, x_stand))
-	y = np.hstack((y_sit, y_stand))
+	x = np.vstack((x_sit, x_stand, x_walk))
+	y = np.hstack((y_sit, y_stand, y_walk))
 
 	if args.model_type == "cnn2d":
 		print("Converting CSI segments to spectrogram...")
@@ -209,7 +217,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		shuffle=False,
 	)
 
-	model = build_model(model_type=args.model_type, input_shape=x_train.shape[1:], num_classes=2)
+	model = build_model(model_type=args.model_type, input_shape=x_train.shape[1:], num_classes=3)
 	model = model.to(device)
 	criterion = nn.CrossEntropyLoss()
 	optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
@@ -269,7 +277,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		writer.close()
 
 	y_pred_prob = _predict_proba(model, val_loader, device)
-	result = evaluate_classification(y_test, y_pred_prob, labels=["sit", "stand"])
+	result = evaluate_classification(y_test, y_pred_prob, labels=["sit", "stand", "walk"])
 
 	print("Confusion Matrix:")
 	print(result["confusion_matrix"])
@@ -282,8 +290,8 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		{
 			"model_type": args.model_type,
 			"input_shape": list(x_train.shape[1:]),
-			"num_classes": 2,
-			"class_names": ["sit", "stand"],
+			"num_classes": 3,
+			"class_names": ["sit", "stand", "walk"],
 			"model": model.state_dict(),
 			"state_dict": model.state_dict(),
 			"optimizer": optimizer.state_dict(),
