@@ -1,5 +1,5 @@
 {
-  "model_type": "cnn2d",
+  "model_type": "lstm-cnn",
   "sit_path": "data/raw/sit1.csv",
   "walk_path": "data/raw/walk.csv",
   "stand_path": "data/raw/stand1.csv",
@@ -14,5 +14,5 @@
   "use_hampel": true,
   "learning_rate": 0.001,
   "output_dir": "experiments/results",
-  "run_name": "baseline_cnn2d"
+  "run_name": "baseline_lstm_cnn"
 }
