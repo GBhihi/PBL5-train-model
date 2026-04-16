@@ -6,8 +6,8 @@ import numpy as np
 def create_segments(
 	data: np.ndarray,
 	label: int,
-	window_size: int = 256,
-	step: int = 128,
+	window_size: int = 512,
+	step: int = 256,
 ) -> tuple[np.ndarray, np.ndarray]:
 	"""Create fixed-size sliding-window segments for a single label."""
 	x: list[np.ndarray] = []
