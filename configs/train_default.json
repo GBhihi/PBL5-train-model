@@ -1,7 +1,6 @@
 {
   "model_type": "lstm-cnn",
   "sit_path": "data/raw/sit.csv",
-  "walk_path": "data/raw/walk.csv",
   "stand_path": "data/raw/stand.csv",
   "window_size": 256,
   "step": 128,
