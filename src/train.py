@@ -195,6 +195,16 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		stratify=y,
 	)
 
+	labels, counts = np.unique(y_train, return_counts=True)
+	print("Train label distribution:")
+	for label, count in zip(labels, counts):
+		print(f"Label {label}: {count} samples")
+
+	labels_val, counts_val = np.unique(y_test, return_counts=True)
+	print("\nValidation label distribution:")
+	for label, count in zip(labels_val, counts_val):
+		print(f"Label {label}: {count} samples")
+
 	print(f"Train shape: {x_train.shape}, Test shape: {x_test.shape}")
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	print(f"Using device: {device}")
@@ -216,6 +226,12 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		batch_size=args.batch_size,
 		shuffle=False,
 	)
+
+	for _, y_batch in train_loader:
+		batch_labels, batch_counts = np.unique(y_batch.numpy(), return_counts=True)
+		print("\nFirst batch label distribution:")
+		print(list(zip(batch_labels.tolist(), batch_counts.tolist())))
+		break
 
 	model = build_model(model_type=args.model_type, input_shape=x_train.shape[1:], num_classes=3)
 	model = model.to(device)
