@@ -35,6 +35,11 @@ def load_csi_csv(
 
 	return csi
 
+def standardize_csi(csi: np.ndarray) -> np.ndarray:
+    """Chuẩn hóa Z-score: Làm nổi bật hình dạng biến động của từng subcarrier."""
+    mu = np.mean(csi, axis=0)
+    sigma = np.std(csi, axis=0)
+    return (csi - mu) / (sigma + 1e-8)
 
 def align_feature_dims(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 	"""Align two CSI arrays by truncating both to smallest feature dimension."""
