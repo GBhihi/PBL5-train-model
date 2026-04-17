@@ -19,7 +19,7 @@ except Exception:
 
 from src.evaluate import evaluate_classification
 from src.model import build_model
-from src.preprocess import align_feature_dims, align_feature_dims_multi, apply_hampel, butterworth_lowpass, load_csi_csv, normalize_global
+from src.preprocess import align_feature_dims, align_feature_dims_multi, apply_hampel, butterworth_lowpass, load_csi_csv, normalize_global, standardize_csi
 from src.spectrogram import convert_segments_to_spectrogram
 from src.window import create_segments
 
@@ -180,6 +180,9 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 
 	x = np.vstack((x_sit, x_stand, x_walk))
 	y = np.hstack((y_sit, y_stand, y_walk))
+
+	print("Applying Z-score standardization...")
+	x = standardize_csi(x)
 
 	if args.model_type == "cnn2d":
 		print("Converting CSI segments to spectrogram...")
