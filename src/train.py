@@ -103,6 +103,27 @@ def _to_torch_input(x: np.ndarray, model_type: str) -> torch.Tensor:
 	return torch.from_numpy(x.astype(np.float32))
 
 
+def _clean_raw_csi(csi: np.ndarray, use_hampel: bool, cutoff: float) -> np.ndarray:
+	if use_hampel:
+		print("Applying Hampel filter...")
+		csi = apply_hampel(csi)
+	print("Applying Butterworth filter...")
+	csi = butterworth_lowpass(csi, cutoff=cutoff)
+	return csi
+
+
+def _finalize_segments(x: np.ndarray, model_type: str, nperseg: int) -> np.ndarray:
+	print("Applying Z-score standardization...")
+	x = standardize_csi(x)
+
+	if model_type == "cnn2d":
+		print("Converting CSI segments to spectrogram...")
+		x = convert_segments_to_spectrogram(x, nperseg=nperseg)
+
+	x = normalize_global(x)
+	return x
+
+
 def _run_epoch(
 	model: nn.Module,
 	loader: DataLoader,
@@ -162,16 +183,9 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	# Align feature dimensions across all classes by truncating to smallest feature dim
 	sit, stand, walk = align_feature_dims_multi(sit, stand, walk)
 
-	if args.use_hampel:
-		print("Applying Hampel filter...")
-		sit = apply_hampel(sit)
-		stand = apply_hampel(stand)
-		walk = apply_hampel(walk)
-
-	print("Applying Butterworth filter...")
-	sit = butterworth_lowpass(sit, cutoff=args.cutoff)
-	stand = butterworth_lowpass(stand, cutoff=args.cutoff)
-	walk = butterworth_lowpass(walk, cutoff=args.cutoff)
+	sit = _clean_raw_csi(sit, args.use_hampel, args.cutoff)
+	stand = _clean_raw_csi(stand, args.use_hampel, args.cutoff)
+	walk = _clean_raw_csi(walk, args.use_hampel, args.cutoff)
 
 	x_sit, y_sit = create_segments(sit, 0, window_size=args.window_size, step=args.step)
 	x_stand, y_stand = create_segments(stand, 1, window_size=args.window_size, step=args.step)
@@ -181,14 +195,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	x = np.vstack((x_sit, x_stand, x_walk))
 	y = np.hstack((y_sit, y_stand, y_walk))
 
-	print("Applying Z-score standardization...")
-	x = standardize_csi(x)
-
-	if args.model_type == "cnn2d":
-		print("Converting CSI segments to spectrogram...")
-		x = convert_segments_to_spectrogram(x, nperseg=args.nperseg)
-
-	x = normalize_global(x)
+	x = _finalize_segments(x, args.model_type, args.nperseg)
 
 	x_train, x_test, y_train, y_test = train_test_split(
 		x,

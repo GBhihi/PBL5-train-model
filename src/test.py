@@ -9,12 +9,18 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 # --- 2. Import module ---
 from model import build_model
-from preprocess import load_csi_csv, butterworth_lowpass, normalize_global, standardize_csi
+from preprocess import (
+    align_feature_dims,
+    butterworth_lowpass,
+    load_csi_csv,
+    normalize_global,
+    standardize_csi,
+)
 from window import create_segments
 
 # --- 3. Đường dẫn file ---
 BASE_DIR = os.path.dirname(__file__)
-model_path = os.path.join(BASE_DIR, "../checkpoints(8)/lstmcnn.pt")
+model_path = os.path.join(BASE_DIR, "../checkpoints(9)/lstmcnn.pt")
 csv_path = os.path.join(BASE_DIR, "../data/raw/stand.csv")
 
 # --- 4. Load checkpoint trước để lấy metadata ---
@@ -64,6 +70,27 @@ print(f"cutoff       : {cutoff}")
 print(f"use_hampel   : {use_hampel}")
 print(f"class_names  : {class_names}")
 
+
+def _clean_raw_csi(csi: np.ndarray, use_hampel: bool, cutoff: float) -> np.ndarray:
+    if use_hampel:
+        from preprocess import apply_hampel
+        csi = apply_hampel(csi)
+    return butterworth_lowpass(csi, cutoff=cutoff)
+
+
+def _finalize_segments(segments: np.ndarray, model_type: str, nperseg: int) -> np.ndarray:
+    print("Applying Z-score standardization...")
+    segments = standardize_csi(segments)
+
+    if model_type == "cnn2d":
+        from spectrogram import convert_segments_to_spectrogram
+
+        print("Converting CSI segments to spectrogram...")
+        segments = convert_segments_to_spectrogram(segments, nperseg=nperseg)
+
+    segments = normalize_global(segments)
+    return segments
+
 # --- 6. Load dữ liệu test ---
 data = load_csi_csv(csv_path)
 print("Raw data shape:", data.shape)
@@ -74,22 +101,18 @@ if saved_input_shape is not None and len(saved_input_shape) >= 2:
     expected_feature_dim = int(saved_input_shape[-1])
     current_feature_dim = int(data.shape[1])
 
-    if current_feature_dim > expected_feature_dim:
-        data = data[:, :expected_feature_dim]
-        print(f"Trim feature dim: {current_feature_dim} -> {expected_feature_dim}")
-    elif current_feature_dim < expected_feature_dim:
+    if current_feature_dim < expected_feature_dim:
         raise ValueError(
             f"Feature dim của file test là {current_feature_dim}, "
             f"nhưng model được train với feature dim {expected_feature_dim}"
         )
+    if current_feature_dim > expected_feature_dim:
+        dummy = np.zeros((data.shape[0], expected_feature_dim), dtype=data.dtype)
+        data, _ = align_feature_dims(data, dummy)
+        print(f"Trim feature dim: {current_feature_dim} -> {expected_feature_dim}")
 
 # --- 8. Preprocess giống train ---
-# Chỉ bật Hampel nếu model lúc train có dùng
-if use_hampel:
-    from preprocess import apply_hampel
-    data = apply_hampel(data)
-
-data = butterworth_lowpass(data, cutoff=cutoff)
+data = _clean_raw_csi(data, use_hampel, cutoff)
 
 # --- 9. Tạo segment ---
 segments, _ = create_segments(
@@ -102,16 +125,7 @@ segments, _ = create_segments(
 print("Segments shape:", segments.shape)
 
 # --- 10. Chuẩn hóa giống train ---
-print("Applying Z-score standardization...")
-segments = standardize_csi(segments)
-
-if model_type == "cnn2d":
-    from spectrogram import convert_segments_to_spectrogram
-
-    print("Converting CSI segments to spectrogram...")
-    segments = convert_segments_to_spectrogram(segments, nperseg=int(train_args.get("nperseg", 128)))
-
-segments = normalize_global(segments)
+segments = _finalize_segments(segments, model_type, int(train_args.get("nperseg", 128)))
 
 # --- 11. Tensor input ---
 inputs = torch.tensor(segments, dtype=torch.float32)
