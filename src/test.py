@@ -9,13 +9,13 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 
 # --- 2. Import module ---
 from model import build_model
-from preprocess import load_csi_csv, butterworth_lowpass, normalize_global
+from preprocess import load_csi_csv, butterworth_lowpass, normalize_global, standardize_csi
 from window import create_segments
 
 # --- 3. Đường dẫn file ---
 BASE_DIR = os.path.dirname(__file__)
-model_path = os.path.join(BASE_DIR, "../checkpoints(7)/lstmcnn.pt")
-csv_path = os.path.join(BASE_DIR, "../data/raw/stand1.csv")
+model_path = os.path.join(BASE_DIR, "../checkpoints(8)/lstmcnn.pt")
+csv_path = os.path.join(BASE_DIR, "../data/raw/stand.csv")
 
 # --- 4. Load checkpoint trước để lấy metadata ---
 ckpt = torch.load(model_path, map_location=torch.device("cpu"))
@@ -68,16 +68,7 @@ print(f"class_names  : {class_names}")
 data = load_csi_csv(csv_path)
 print("Raw data shape:", data.shape)
 
-# --- 7. Preprocess giống train ---
-# Chỉ bật Hampel nếu model lúc train có dùng
-if use_hampel:
-    from preprocess import apply_hampel
-    data = apply_hampel(data)
-
-data = butterworth_lowpass(data, cutoff=cutoff)
-data = normalize_global(data)
-
-# --- 8. Khớp số chiều feature nếu cần ---
+# --- 7. Khớp số chiều feature nếu cần (giống bước align trước khi lọc ở train) ---
 # saved_input_shape của lstmcnn thường là [window_size, feature_dim]
 if saved_input_shape is not None and len(saved_input_shape) >= 2:
     expected_feature_dim = int(saved_input_shape[-1])
@@ -92,6 +83,14 @@ if saved_input_shape is not None and len(saved_input_shape) >= 2:
             f"nhưng model được train với feature dim {expected_feature_dim}"
         )
 
+# --- 8. Preprocess giống train ---
+# Chỉ bật Hampel nếu model lúc train có dùng
+if use_hampel:
+    from preprocess import apply_hampel
+    data = apply_hampel(data)
+
+data = butterworth_lowpass(data, cutoff=cutoff)
+
 # --- 9. Tạo segment ---
 segments, _ = create_segments(
     data,
@@ -102,22 +101,34 @@ segments, _ = create_segments(
 
 print("Segments shape:", segments.shape)
 
-# --- 10. Tensor input ---
+# --- 10. Chuẩn hóa giống train ---
+print("Applying Z-score standardization...")
+segments = standardize_csi(segments)
+
+if model_type == "cnn2d":
+    from spectrogram import convert_segments_to_spectrogram
+
+    print("Converting CSI segments to spectrogram...")
+    segments = convert_segments_to_spectrogram(segments, nperseg=int(train_args.get("nperseg", 128)))
+
+segments = normalize_global(segments)
+
+# --- 11. Tensor input ---
 inputs = torch.tensor(segments, dtype=torch.float32)
 
-# --- 11. Build model đúng kiểu ---
+# --- 12. Build model đúng kiểu ---
 input_shape = segments.shape[1:]
 model = build_model(model_type=model_type, input_shape=input_shape, num_classes=num_classes)
 model.load_state_dict(sd)
 model.eval()
 
-# --- 12. Predict ---
+# --- 13. Predict ---
 with torch.no_grad():
     outputs = model(inputs)
     probs = torch.softmax(outputs, dim=1)
     predictions = torch.argmax(outputs, dim=1).cpu().numpy()
 
-# --- 13. Thống kê ---
+# --- 14. Thống kê ---
 unique, counts = np.unique(predictions, return_counts=True)
 
 print("\nSegment prediction counts:")
