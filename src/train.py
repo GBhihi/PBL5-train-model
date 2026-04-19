@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
 import torch
 from torch import nn
@@ -60,6 +61,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--output-dir", default="experiments/results")
 	parser.add_argument("--run-name", default=None)
 	parser.add_argument("--save-model", default=None)
+	parser.add_argument("--pca-components", type=int, default=10)
 
 	if config_values:
 		parser.set_defaults(**config_values)
@@ -103,10 +105,26 @@ def _to_torch_input(x: np.ndarray, model_type: str) -> torch.Tensor:
 	return torch.from_numpy(x.astype(np.float32))
 
 
-def _clean_raw_csi(csi: np.ndarray, use_hampel: bool, cutoff: float) -> np.ndarray:
+def _clean_raw_csi(
+	csi: np.ndarray,
+	use_hampel: bool,
+	cutoff: float,
+	n_components: int = 10,
+) -> np.ndarray:
+	"""
+	Clean CSI data with optional Hampel filter, PCA, and low-pass filtering.
+	"""
 	if use_hampel:
 		print("Applying Hampel filter...")
 		csi = apply_hampel(csi)
+
+	print("Standardizing for PCA...")
+	csi = standardize_csi(csi)
+
+	print(f"Applying PCA (n_components={n_components})...")
+	pca = PCA(n_components=n_components)
+	csi = pca.fit_transform(csi)
+
 	print("Applying Butterworth filter...")
 	csi = butterworth_lowpass(csi, cutoff=cutoff)
 	return csi
@@ -183,9 +201,9 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	# Align feature dimensions across all classes by truncating to smallest feature dim
 	sit, stand, walk = align_feature_dims_multi(sit, stand, walk)
 
-	sit = _clean_raw_csi(sit, args.use_hampel, args.cutoff)
-	stand = _clean_raw_csi(stand, args.use_hampel, args.cutoff)
-	walk = _clean_raw_csi(walk, args.use_hampel, args.cutoff)
+	sit = _clean_raw_csi(sit, args.use_hampel, args.cutoff, n_components=args.pca_components)
+	stand = _clean_raw_csi(stand, args.use_hampel, args.cutoff, n_components=args.pca_components)
+	walk = _clean_raw_csi(walk, args.use_hampel, args.cutoff, n_components=args.pca_components)
 
 	x_sit, y_sit = create_segments(sit, 0, window_size=args.window_size, step=args.step)
 	x_stand, y_stand = create_segments(stand, 1, window_size=args.window_size, step=args.step)
