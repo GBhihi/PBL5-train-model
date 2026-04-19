@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
 import torch
 from torch import nn
@@ -20,7 +19,7 @@ except Exception:
 
 from src.evaluate import evaluate_classification
 from src.model import build_model
-from src.preprocess import align_feature_dims, align_feature_dims_multi, apply_hampel, butterworth_lowpass, load_csi_csv, normalize_global, standardize_csi
+from src.preprocess import align_feature_dims_multi, apply_hampel, butterworth_lowpass, load_csi_csv
 from src.spectrogram import convert_segments_to_spectrogram
 from src.window import create_segments
 
@@ -61,7 +60,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--output-dir", default="experiments/results")
 	parser.add_argument("--run-name", default=None)
 	parser.add_argument("--save-model", default=None)
-	parser.add_argument("--pca-components", type=int, default=10)
 
 	if config_values:
 		parser.set_defaults(**config_values)
@@ -105,41 +103,44 @@ def _to_torch_input(x: np.ndarray, model_type: str) -> torch.Tensor:
 	return torch.from_numpy(x.astype(np.float32))
 
 
-def _clean_raw_csi(
-	csi: np.ndarray,
-	use_hampel: bool,
-	cutoff: float,
-	n_components: int = 10,
-) -> np.ndarray:
-	"""
-	Clean CSI data with optional Hampel filter, PCA, and low-pass filtering.
-	"""
+def _clean_raw_csi(csi: np.ndarray, use_hampel: bool, cutoff: float) -> np.ndarray:
 	if use_hampel:
 		print("Applying Hampel filter...")
 		csi = apply_hampel(csi)
-
-	print("Standardizing for PCA...")
-	csi = standardize_csi(csi)
-
-	print(f"Applying PCA (n_components={n_components})...")
-	pca = PCA(n_components=n_components)
-	csi = pca.fit_transform(csi)
-
 	print("Applying Butterworth filter...")
 	csi = butterworth_lowpass(csi, cutoff=cutoff)
 	return csi
 
 
-def _finalize_segments(x: np.ndarray, model_type: str, nperseg: int) -> np.ndarray:
-	print("Applying Z-score standardization...")
-	x = standardize_csi(x)
-
+def _finalize_segments_before_split(x: np.ndarray, model_type: str, nperseg: int) -> np.ndarray:
 	if model_type == "cnn2d":
 		print("Converting CSI segments to spectrogram...")
 		x = convert_segments_to_spectrogram(x, nperseg=nperseg)
-
-	x = normalize_global(x)
 	return x
+
+
+def _fit_standardizer_3d(x_train: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+	if x_train.ndim == 3:
+		mu = np.mean(x_train, axis=(0, 1), keepdims=True)
+		sigma = np.std(x_train, axis=(0, 1), keepdims=True)
+	elif x_train.ndim == 4:
+		mu = np.mean(x_train, axis=(0, 1, 2), keepdims=True)
+		sigma = np.std(x_train, axis=(0, 1, 2), keepdims=True)
+	else:
+		raise ValueError(f"Unsupported input ndim for standardization: {x_train.ndim}")
+	return mu, sigma
+
+
+def _apply_standardizer(x: np.ndarray, mu: np.ndarray, sigma: np.ndarray) -> np.ndarray:
+	return (x - mu) / (sigma + 1e-8)
+
+
+def _fit_global_normalizer(x_train: np.ndarray) -> float:
+	return float(np.max(np.abs(x_train)))
+
+
+def _apply_global_normalizer(x: np.ndarray, max_abs: float, eps: float = 1e-8) -> np.ndarray:
+	return x / (max_abs + eps)
 
 
 def _run_epoch(
@@ -201,9 +202,9 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	# Align feature dimensions across all classes by truncating to smallest feature dim
 	sit, stand, walk = align_feature_dims_multi(sit, stand, walk)
 
-	sit = _clean_raw_csi(sit, args.use_hampel, args.cutoff, n_components=args.pca_components)
-	stand = _clean_raw_csi(stand, args.use_hampel, args.cutoff, n_components=args.pca_components)
-	walk = _clean_raw_csi(walk, args.use_hampel, args.cutoff, n_components=args.pca_components)
+	sit = _clean_raw_csi(sit, args.use_hampel, args.cutoff)
+	stand = _clean_raw_csi(stand, args.use_hampel, args.cutoff)
+	walk = _clean_raw_csi(walk, args.use_hampel, args.cutoff)
 
 	x_sit, y_sit = create_segments(sit, 0, window_size=args.window_size, step=args.step)
 	x_stand, y_stand = create_segments(stand, 1, window_size=args.window_size, step=args.step)
@@ -213,7 +214,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	x = np.vstack((x_sit, x_stand, x_walk))
 	y = np.hstack((y_sit, y_stand, y_walk))
 
-	x = _finalize_segments(x, args.model_type, args.nperseg)
+	x = _finalize_segments_before_split(x, args.model_type, args.nperseg)
 
 	x_train, x_test, y_train, y_test = train_test_split(
 		x,
@@ -222,6 +223,16 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		random_state=args.random_state,
 		stratify=y,
 	)
+
+	print("Fitting standardizer on training set only...")
+	mu, sigma = _fit_standardizer_3d(x_train)
+	x_train = _apply_standardizer(x_train, mu, sigma)
+	x_test = _apply_standardizer(x_test, mu, sigma)
+
+	print("Applying global normalization from training set only...")
+	max_abs = _fit_global_normalizer(x_train)
+	x_train = _apply_global_normalizer(x_train, max_abs)
+	x_test = _apply_global_normalizer(x_test, max_abs)
 
 	labels, counts = np.unique(y_train, return_counts=True)
 	print("Train label distribution:")
