@@ -3,7 +3,6 @@ import sys
 import os
 import torch
 import numpy as np
-from sklearn.decomposition import PCA
 
 # --- 1. Thêm đường dẫn src ---
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
@@ -11,10 +10,9 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 # --- 2. Import module ---
 from model import build_model
 from preprocess import (
+    align_feature_dims,
     butterworth_lowpass,
     load_csi_csv,
-    normalize_global,
-    standardize_csi,
 )
 from window import create_segments
 
@@ -32,12 +30,18 @@ if isinstance(ckpt, dict):
     train_args = ckpt.get("args", {})
     saved_input_shape = ckpt.get("input_shape", None)
     class_names = ckpt.get("class_names", ["sit", "stand", "walk"])
+    standardizer_mu = ckpt.get("standardizer_mu", None)
+    standardizer_sigma = ckpt.get("standardizer_sigma", None)
+    global_max_abs = ckpt.get("global_max_abs", None)
 else:
     model_type = "lstmcnn"
     num_classes = 3
     train_args = {}
     saved_input_shape = None
     class_names = ["sit", "stand", "walk"]
+    standardizer_mu = None
+    standardizer_sigma = None
+    global_max_abs = None
 
 # lấy state_dict
 if isinstance(ckpt, dict):
@@ -63,7 +67,6 @@ step = int(train_args.get("step", 128))
 cutoff = float(train_args.get("cutoff", 0.1))
 use_hampel = bool(train_args.get("use_hampel", False))
 nperseg = train_args.get("nperseg", None)
-pca_components = int(train_args.get("pca_components", 10))
 
 if saved_input_shape is None:
     raise ValueError("Checkpoint missing input_shape; cannot align test data like train.")
@@ -71,66 +74,70 @@ if nperseg is None:
     raise ValueError("Checkpoint missing nperseg; cannot match train spectrogram settings.")
 nperseg = int(nperseg)
 
+if standardizer_mu is None or standardizer_sigma is None or global_max_abs is None:
+    raise ValueError(
+        "Checkpoint missing standardization stats. Retrain with updated train.py "
+        "to save standardizer_mu, standardizer_sigma, and global_max_abs."
+    )
+
+standardizer_mu = np.asarray(standardizer_mu)
+standardizer_sigma = np.asarray(standardizer_sigma)
+global_max_abs = float(global_max_abs)
+
 print(f"model_type   : {model_type}")
 print(f"window_size  : {window_size}")
 print(f"step         : {step}")
 print(f"cutoff       : {cutoff}")
 print(f"use_hampel   : {use_hampel}")
-print(f"pca_components: {pca_components}")
 print(f"class_names  : {class_names}")
 
 
-def _clean_raw_csi(
-    csi: np.ndarray,
-    use_hampel: bool,
-    cutoff: float,
-    n_components: int,
-) -> np.ndarray:
+def _clean_raw_csi(csi: np.ndarray, use_hampel: bool, cutoff: float) -> np.ndarray:
     if use_hampel:
         from preprocess import apply_hampel
-        print("Applying Hampel filter...")
         csi = apply_hampel(csi)
-
-    print("Standardizing for PCA...")
-    csi = standardize_csi(csi)
-
-    print(f"Applying PCA (n_components={n_components})...")
-    pca = PCA(n_components=n_components)
-    csi = pca.fit_transform(csi)
-
-    print("Applying Butterworth filter...")
     return butterworth_lowpass(csi, cutoff=cutoff)
 
 
-def _finalize_segments(segments: np.ndarray, model_type: str, nperseg: int) -> np.ndarray:
-    print("Applying Z-score standardization...")
-    segments = standardize_csi(segments)
 
+def _finalize_segments(segments: np.ndarray, model_type: str, nperseg: int) -> np.ndarray:
     if model_type == "cnn2d":
         from spectrogram import convert_segments_to_spectrogram
 
         print("Converting CSI segments to spectrogram...")
         segments = convert_segments_to_spectrogram(segments, nperseg=nperseg)
-
-    segments = normalize_global(segments)
     return segments
+
+
+def _apply_standardizer(x: np.ndarray, mu: np.ndarray, sigma: np.ndarray) -> np.ndarray:
+    return (x - mu) / (sigma + 1e-8)
+
+
+def _apply_global_normalizer(x: np.ndarray, max_abs: float, eps: float = 1e-8) -> np.ndarray:
+    return x / (max_abs + eps)
 
 # --- 6. Load dữ liệu test ---
 data = load_csi_csv(csv_path)
 print("Raw data shape:", data.shape)
 
-# --- 7. Kiểm tra PCA components khớp với model ---
-# saved_input_shape của lstmcnn thường là [window_size, feature_dim] sau PCA
-expected_feature_dim = int(saved_input_shape[-1])
-if expected_feature_dim != pca_components:
-    raise ValueError(
-        f"Checkpoint expects {expected_feature_dim} PCA components, "
-        f"but test is configured with {pca_components}."
-    )
+# --- 7. Khớp số chiều feature nếu cần (giống bước align trước khi lọc ở train) ---
+# saved_input_shape của lstmcnn thường là [window_size, feature_dim]
+if model_type == "lstmcnn":
+    expected_feature_dim = int(saved_input_shape[-1])
+    current_feature_dim = int(data.shape[1])
 
-# --- 8. Preprocess giống train (Standardize -> PCA -> Butterworth) ---
-data = _clean_raw_csi(data, use_hampel, cutoff, n_components=pca_components)
-print("Data shape after PCA & filter:", data.shape)
+    if current_feature_dim < expected_feature_dim:
+        raise ValueError(
+            f"Feature dim của file test là {current_feature_dim}, "
+            f"nhưng model được train với feature dim {expected_feature_dim}"
+        )
+    if current_feature_dim > expected_feature_dim:
+        dummy = np.zeros((data.shape[0], expected_feature_dim), dtype=data.dtype)
+        data, _ = align_feature_dims(data, dummy)
+        print(f"Trim feature dim: {current_feature_dim} -> {expected_feature_dim}")
+
+# --- 8. Preprocess giống train ---
+data = _clean_raw_csi(data, use_hampel, cutoff)
 
 # --- 9. Tạo segment ---
 segments, _ = create_segments(
@@ -144,6 +151,9 @@ print("Segments shape:", segments.shape)
 
 # --- 10. Chuẩn hóa giống train ---
 segments = _finalize_segments(segments, model_type, nperseg)
+
+segments = _apply_standardizer(segments, standardizer_mu, standardizer_sigma)
+segments = _apply_global_normalizer(segments, global_max_abs)
 
 # --- 11. Tensor input ---
 inputs = torch.tensor(segments, dtype=torch.float32)
@@ -181,5 +191,5 @@ confidence = probs.mean(dim=0)[final_class].item()
 
 print("\n==============================")
 print(f"Final prediction for file: {final_name}")
-print(f"Average confidence       : {confidence:.4f}")
+print(f"Average confidence : {confidence:.4f}")
 print("==============================")
