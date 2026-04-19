@@ -3,6 +3,7 @@ import sys
 import os
 import torch
 import numpy as np
+from sklearn.decomposition import PCA
 
 # --- 1. Thêm đường dẫn src ---
 sys.path.append(os.path.abspath(os.path.dirname(__file__)))
@@ -10,7 +11,6 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 # --- 2. Import module ---
 from model import build_model
 from preprocess import (
-    align_feature_dims,
     butterworth_lowpass,
     load_csi_csv,
     normalize_global,
@@ -20,8 +20,8 @@ from window import create_segments
 
 # --- 3. Đường dẫn file ---
 BASE_DIR = os.path.dirname(__file__)
-model_path = os.path.join(BASE_DIR, "../checkpoints(9)/lstmcnn.pt")
-csv_path = os.path.join(BASE_DIR, "../data/raw/stand.csv")
+model_path = os.path.join(BASE_DIR, "../checkpoints(10)/lstmcnn.pt")
+csv_path = os.path.join(BASE_DIR, "../data/raw/sit.csv")
 
 # --- 4. Load checkpoint trước để lấy metadata ---
 ckpt = torch.load(model_path, map_location=torch.device("cpu"))
@@ -62,19 +62,43 @@ window_size = int(train_args.get("window_size", 256))
 step = int(train_args.get("step", 128))
 cutoff = float(train_args.get("cutoff", 0.1))
 use_hampel = bool(train_args.get("use_hampel", False))
+nperseg = train_args.get("nperseg", None)
+pca_components = int(train_args.get("pca_components", 10))
+
+if saved_input_shape is None:
+    raise ValueError("Checkpoint missing input_shape; cannot align test data like train.")
+if nperseg is None:
+    raise ValueError("Checkpoint missing nperseg; cannot match train spectrogram settings.")
+nperseg = int(nperseg)
 
 print(f"model_type   : {model_type}")
 print(f"window_size  : {window_size}")
 print(f"step         : {step}")
 print(f"cutoff       : {cutoff}")
 print(f"use_hampel   : {use_hampel}")
+print(f"pca_components: {pca_components}")
 print(f"class_names  : {class_names}")
 
 
-def _clean_raw_csi(csi: np.ndarray, use_hampel: bool, cutoff: float) -> np.ndarray:
+def _clean_raw_csi(
+    csi: np.ndarray,
+    use_hampel: bool,
+    cutoff: float,
+    n_components: int,
+) -> np.ndarray:
     if use_hampel:
         from preprocess import apply_hampel
+        print("Applying Hampel filter...")
         csi = apply_hampel(csi)
+
+    print("Standardizing for PCA...")
+    csi = standardize_csi(csi)
+
+    print(f"Applying PCA (n_components={n_components})...")
+    pca = PCA(n_components=n_components)
+    csi = pca.fit_transform(csi)
+
+    print("Applying Butterworth filter...")
     return butterworth_lowpass(csi, cutoff=cutoff)
 
 
@@ -95,24 +119,18 @@ def _finalize_segments(segments: np.ndarray, model_type: str, nperseg: int) -> n
 data = load_csi_csv(csv_path)
 print("Raw data shape:", data.shape)
 
-# --- 7. Khớp số chiều feature nếu cần (giống bước align trước khi lọc ở train) ---
-# saved_input_shape của lstmcnn thường là [window_size, feature_dim]
-if saved_input_shape is not None and len(saved_input_shape) >= 2:
-    expected_feature_dim = int(saved_input_shape[-1])
-    current_feature_dim = int(data.shape[1])
+# --- 7. Kiểm tra PCA components khớp với model ---
+# saved_input_shape của lstmcnn thường là [window_size, feature_dim] sau PCA
+expected_feature_dim = int(saved_input_shape[-1])
+if expected_feature_dim != pca_components:
+    raise ValueError(
+        f"Checkpoint expects {expected_feature_dim} PCA components, "
+        f"but test is configured with {pca_components}."
+    )
 
-    if current_feature_dim < expected_feature_dim:
-        raise ValueError(
-            f"Feature dim của file test là {current_feature_dim}, "
-            f"nhưng model được train với feature dim {expected_feature_dim}"
-        )
-    if current_feature_dim > expected_feature_dim:
-        dummy = np.zeros((data.shape[0], expected_feature_dim), dtype=data.dtype)
-        data, _ = align_feature_dims(data, dummy)
-        print(f"Trim feature dim: {current_feature_dim} -> {expected_feature_dim}")
-
-# --- 8. Preprocess giống train ---
-data = _clean_raw_csi(data, use_hampel, cutoff)
+# --- 8. Preprocess giống train (Standardize -> PCA -> Butterworth) ---
+data = _clean_raw_csi(data, use_hampel, cutoff, n_components=pca_components)
+print("Data shape after PCA & filter:", data.shape)
 
 # --- 9. Tạo segment ---
 segments, _ = create_segments(
@@ -125,7 +143,7 @@ segments, _ = create_segments(
 print("Segments shape:", segments.shape)
 
 # --- 10. Chuẩn hóa giống train ---
-segments = _finalize_segments(segments, model_type, int(train_args.get("nperseg", 128)))
+segments = _finalize_segments(segments, model_type, nperseg)
 
 # --- 11. Tensor input ---
 inputs = torch.tensor(segments, dtype=torch.float32)
