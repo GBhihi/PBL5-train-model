@@ -10,16 +10,16 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 # --- 2. Import module ---
 from model import build_model
 from preprocess import (
-    align_feature_dims,
     butterworth_lowpass,
     load_csi_csv,
 )
+from spectrogram import convert_segments_to_spectrogram
 from window import create_segments
 
 # --- 3. Đường dẫn file ---
 BASE_DIR = os.path.dirname(__file__)
-model_path = os.path.join(BASE_DIR, "../checkpoints(12)/lstmcnn.pt")
-csv_path = os.path.join(BASE_DIR, "../data/raw/stand1.csv")
+model_path = os.path.join(BASE_DIR, "../checkpoints(13)/lstmcnn.pt")
+csv_path = os.path.join(BASE_DIR, "../data/test/test_sit.csv")
 # --- 4. Load checkpoint trước để lấy metadata ---
 ckpt = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
 
@@ -99,10 +99,8 @@ def _clean_raw_csi(csi: np.ndarray, use_hampel: bool, cutoff: float) -> np.ndarr
 
 
 
-def _finalize_segments(segments: np.ndarray, model_type: str, nperseg: int) -> np.ndarray:
+def _finalize_segments_before_predict(segments: np.ndarray, model_type: str, nperseg: int) -> np.ndarray:
     if model_type == "cnn2d":
-        from spectrogram import convert_segments_to_spectrogram
-
         print("Converting CSI segments to spectrogram...")
         segments = convert_segments_to_spectrogram(segments, nperseg=nperseg)
     return segments
@@ -119,21 +117,18 @@ def _apply_global_normalizer(x: np.ndarray, max_abs: float, eps: float = 1e-8) -
 data = load_csi_csv(csv_path)
 print("Raw data shape:", data.shape)
 
-# --- 7. Khớp số chiều feature nếu cần (giống bước align trước khi lọc ở train) ---
-# saved_input_shape của lstmcnn thường là [window_size, feature_dim]
-if model_type == "lstmcnn":
-    expected_feature_dim = int(saved_input_shape[-1])
-    current_feature_dim = int(data.shape[1])
+# --- 7. Khớp số chiều feature trước khi clean, giống train đang align theo feature dim ---
+expected_feature_dim = int(saved_input_shape[-1])
+current_feature_dim = int(data.shape[1])
 
-    if current_feature_dim < expected_feature_dim:
-        raise ValueError(
-            f"Feature dim của file test là {current_feature_dim}, "
-            f"nhưng model được train với feature dim {expected_feature_dim}"
-        )
-    if current_feature_dim > expected_feature_dim:
-        dummy = np.zeros((data.shape[0], expected_feature_dim), dtype=data.dtype)
-        data, _ = align_feature_dims(data, dummy)
-        print(f"Trim feature dim: {current_feature_dim} -> {expected_feature_dim}")
+if current_feature_dim < expected_feature_dim:
+    raise ValueError(
+        f"Feature dim của file test là {current_feature_dim}, "
+        f"nhưng model được train với feature dim {expected_feature_dim}"
+    )
+if current_feature_dim > expected_feature_dim:
+    data = data[:, :expected_feature_dim]
+    print(f"Trim feature dim: {current_feature_dim} -> {expected_feature_dim}")
 
 # --- 8. Preprocess giống train ---
 data = _clean_raw_csi(data, use_hampel, cutoff)
@@ -149,18 +144,21 @@ segments, _ = create_segments(
 print("Segments shape:", segments.shape)
 
 # --- 10. Chuẩn hóa giống train ---
-segments = _finalize_segments(segments, model_type, nperseg)
+segments = _finalize_segments_before_predict(segments, model_type, nperseg)
 
 segments = _apply_standardizer(segments, standardizer_mu, standardizer_sigma)
 segments = _apply_global_normalizer(segments, global_max_abs)
 
 # --- 11. Tensor input ---
-inputs = torch.tensor(segments, dtype=torch.float32)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+inputs = torch.tensor(segments, dtype=torch.float32, device=device)
 
 # --- 12. Build model đúng kiểu ---
 input_shape = segments.shape[1:]
 model = build_model(model_type=model_type, input_shape=input_shape, num_classes=num_classes)
 model.load_state_dict(sd)
+model = model.to(device)
 model.eval()
 
 # --- 13. Predict ---
