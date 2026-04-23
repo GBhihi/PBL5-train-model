@@ -19,7 +19,7 @@ except Exception:
 
 from src.evaluate import evaluate_classification
 from src.model import build_model
-from src.preprocess import align_feature_dims_multi, clean_csi, load_csi_csv
+from src.preprocess import align_feature_dims_multi, apply_hampel, butterworth_lowpass, load_csi_csv
 from src.spectrogram import convert_segments_to_spectrogram
 from src.window import create_segments
 
@@ -101,6 +101,15 @@ def _to_torch_input(x: np.ndarray, model_type: str) -> torch.Tensor:
 		# (N, H, W, C) -> (N, C, H, W)
 		x = np.transpose(x, (0, 3, 1, 2))
 	return torch.from_numpy(x.astype(np.float32))
+
+
+def _clean_raw_csi(csi: np.ndarray, use_hampel: bool, cutoff: float) -> np.ndarray:
+	if use_hampel:
+		print("Applying Hampel filter...")
+		csi = apply_hampel(csi)
+	print("Applying Butterworth filter...")
+	csi = butterworth_lowpass(csi, cutoff=cutoff)
+	return csi
 
 
 def _finalize_segments_before_split(x: np.ndarray, model_type: str, nperseg: int) -> np.ndarray:
@@ -193,9 +202,9 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	# Align feature dimensions across all classes by truncating to smallest feature dim
 	sit, stand, walk = align_feature_dims_multi(sit, stand, walk)
 
-	sit = clean_csi(sit, use_hampel=args.use_hampel, cutoff=args.cutoff, verbose=True)
-	stand = clean_csi(stand, use_hampel=args.use_hampel, cutoff=args.cutoff, verbose=True)
-	walk = clean_csi(walk, use_hampel=args.use_hampel, cutoff=args.cutoff, verbose=True)
+	sit = _clean_raw_csi(sit, args.use_hampel, args.cutoff)
+	stand = _clean_raw_csi(stand, args.use_hampel, args.cutoff)
+	walk = _clean_raw_csi(walk, args.use_hampel, args.cutoff)
 
 	x_sit, y_sit = create_segments(sit, 0, window_size=args.window_size, step=args.step)
 	x_stand, y_stand = create_segments(stand, 1, window_size=args.window_size, step=args.step)
