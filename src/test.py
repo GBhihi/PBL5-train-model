@@ -10,7 +10,7 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 # --- 2. Import module ---
 from model import build_model
 from preprocess import (
-    clean_csi,
+    butterworth_lowpass,
     load_csi_csv,
 )
 from spectrogram import convert_segments_to_spectrogram
@@ -91,6 +91,13 @@ print(f"use_hampel   : {use_hampel}")
 print(f"class_names  : {class_names}")
 
 
+def _clean_raw_csi(csi: np.ndarray, use_hampel: bool, cutoff: float) -> np.ndarray:
+    if use_hampel:
+        from preprocess import apply_hampel
+        csi = apply_hampel(csi)
+    return butterworth_lowpass(csi, cutoff=cutoff)
+
+
 def _finalize_segments_before_predict(segments: np.ndarray, model_type: str, nperseg: int) -> np.ndarray:
     if model_type == "cnn2d":
         print("Converting CSI segments to spectrogram...")
@@ -123,7 +130,7 @@ if current_feature_dim > expected_feature_dim:
     print(f"Trim feature dim: {current_feature_dim} -> {expected_feature_dim}")
 
 # --- 8. Preprocess giống train ---
-data = clean_csi(data, use_hampel=use_hampel, cutoff=cutoff)
+data = _clean_raw_csi(data, use_hampel, cutoff)
 
 # --- 9. Tạo segment ---
 segments, _ = create_segments(
