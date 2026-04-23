@@ -10,7 +10,7 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 # --- 2. Import module ---
 from model import build_model
 from preprocess import (
-    butterworth_lowpass,
+    clean_csi,
     load_csi_csv,
 )
 from spectrogram import convert_segments_to_spectrogram
@@ -18,8 +18,8 @@ from window import create_segments
 
 # --- 3. Đường dẫn file ---
 BASE_DIR = os.path.dirname(__file__)
-model_path = os.path.join(BASE_DIR, "../checkpoints(13)/lstmcnn.pt")
-csv_path = os.path.join(BASE_DIR, "../data/test/test_sit.csv")
+model_path = os.path.join(BASE_DIR, "../checkpoints(1)/lstmcnn.pt")
+csv_path = os.path.join(BASE_DIR, "../data/test/test_stand1.csv")
 # --- 4. Load checkpoint trước để lấy metadata ---
 ckpt = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
 
@@ -91,14 +91,6 @@ print(f"use_hampel   : {use_hampel}")
 print(f"class_names  : {class_names}")
 
 
-def _clean_raw_csi(csi: np.ndarray, use_hampel: bool, cutoff: float) -> np.ndarray:
-    if use_hampel:
-        from preprocess import apply_hampel
-        csi = apply_hampel(csi)
-    return butterworth_lowpass(csi, cutoff=cutoff)
-
-
-
 def _finalize_segments_before_predict(segments: np.ndarray, model_type: str, nperseg: int) -> np.ndarray:
     if model_type == "cnn2d":
         print("Converting CSI segments to spectrogram...")
@@ -131,7 +123,7 @@ if current_feature_dim > expected_feature_dim:
     print(f"Trim feature dim: {current_feature_dim} -> {expected_feature_dim}")
 
 # --- 8. Preprocess giống train ---
-data = _clean_raw_csi(data, use_hampel, cutoff)
+data = clean_csi(data, use_hampel=use_hampel, cutoff=cutoff)
 
 # --- 9. Tạo segment ---
 segments, _ = create_segments(

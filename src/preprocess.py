@@ -89,6 +89,23 @@ def butterworth_lowpass(csi: np.ndarray, order: int = 4, cutoff: float = 0.1) ->
     return filtfilt(b, a, csi, axis=0)
 
 
+def clean_csi(
+    csi: np.ndarray,
+    use_hampel: bool = False,
+    cutoff: float = 0.1,
+    order: int = 4,
+    verbose: bool = False,
+) -> np.ndarray:
+    """Apply optional Hampel filtering and Butterworth low-pass filtering."""
+    if use_hampel:
+        if verbose:
+            print("Applying Hampel filter...")
+        csi = apply_hampel(csi)
+    if verbose:
+        print("Applying Butterworth filter...")
+    return butterworth_lowpass(csi, order=order, cutoff=cutoff)
+
+
 def normalize_global(x: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     """Normalize tensor by global max absolute value."""
     max_abs = np.max(np.abs(x))
@@ -123,3 +140,79 @@ def get_los_csi(csi: np.ndarray, amplitude_threshold: float = None, std_threshol
     """
     los_idx = select_los_subcarriers(csi, amplitude_threshold, std_threshold)
     return csi[:, los_idx]
+
+
+def select_los_plus_nonlos_subcarriers(
+    csi: np.ndarray,
+    amplitude_threshold: float = None,
+    std_threshold: float = None,
+    nonlos_top_k: int = 5,
+    nonlos_above_mean_only: bool = True,
+) -> np.ndarray:
+    """
+    Select LOS subcarriers plus a few high-variation non-LOS subcarriers.
+
+    LOS rule:
+    - mean amplitude >= amplitude_threshold
+    - std amplitude <= std_threshold
+
+    Extra non-LOS rule:
+    - choose top-k non-LOS by std amplitude
+    - optionally keep only those above mean non-LOS std
+    """
+    if csi.ndim != 2:
+        raise ValueError(f"Expected csi to be 2D, got shape={csi.shape}")
+    if nonlos_top_k < 0:
+        raise ValueError("nonlos_top_k must be >= 0")
+
+    amplitude = np.abs(csi)
+    mean_amp = np.mean(amplitude, axis=0)
+    std_amp = np.std(amplitude, axis=0)
+
+    if amplitude_threshold is None:
+        amplitude_threshold = np.median(mean_amp)
+    if std_threshold is None:
+        std_threshold = np.median(std_amp)
+
+    los_idx = np.where((mean_amp >= amplitude_threshold) & (std_amp <= std_threshold))[0]
+
+    all_idx = np.arange(csi.shape[1])
+    nonlos_idx = np.setdiff1d(all_idx, los_idx, assume_unique=False)
+
+    if nonlos_top_k == 0 or nonlos_idx.size == 0:
+        return np.sort(los_idx)
+
+    nonlos_std = std_amp[nonlos_idx]
+    if nonlos_above_mean_only:
+        mean_nonlos_std = float(np.mean(nonlos_std))
+        keep_mask = nonlos_std > mean_nonlos_std
+        nonlos_idx = nonlos_idx[keep_mask]
+        nonlos_std = nonlos_std[keep_mask]
+
+        if nonlos_idx.size == 0:
+            return np.sort(los_idx)
+
+    top_k = min(nonlos_top_k, nonlos_idx.size)
+    top_idx = np.argsort(-nonlos_std)[:top_k]
+    high_var_nonlos_idx = nonlos_idx[top_idx]
+
+    selected_idx = np.sort(np.concatenate([los_idx, high_var_nonlos_idx]))
+    return selected_idx
+
+
+def get_los_plus_nonlos_csi(
+    csi: np.ndarray,
+    amplitude_threshold: float = None,
+    std_threshold: float = None,
+    nonlos_top_k: int = 5,
+    nonlos_above_mean_only: bool = True,
+) -> np.ndarray:
+    """Extract CSI with LOS subcarriers and extra high-variation non-LOS subcarriers."""
+    selected_idx = select_los_plus_nonlos_subcarriers(
+        csi,
+        amplitude_threshold=amplitude_threshold,
+        std_threshold=std_threshold,
+        nonlos_top_k=nonlos_top_k,
+        nonlos_above_mean_only=nonlos_above_mean_only,
+    )
+    return csi[:, selected_idx]
