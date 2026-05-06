@@ -9,14 +9,34 @@ import pandas as pd
 def load_numeric_csv(path: str | Path, metadata_columns: int = 1) -> np.ndarray:
     """Load numeric columns from CSV and drop metadata columns.
 
-    - Automatically selects numeric dtype columns (so headers are supported).
-    - `metadata_columns` drops the first N numeric columns (e.g., rssi, ts).
+    This is a robust line-by-line parser that:
+    - skips header or non-numeric lines
+    - skips malformed rows with wrong field counts
+    - drops the first `metadata_columns` numeric fields
+
+    Returns a NumPy array of shape (num_frames, num_numeric_cols - metadata_columns).
     """
-    df = pd.read_csv(path)
-    numeric = df.select_dtypes(include=[np.number])
-    if numeric.shape[1] <= metadata_columns:
-        raise ValueError("Not enough numeric columns after dropping metadata_columns")
-    return numeric.values[:, metadata_columns:]
+    rows: list[list[float]] = []
+    path_p = Path(path)
+    with path_p.open("r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            parts = line.strip().split(",")
+            if not parts:
+                continue
+            # try to parse all parts as float; if any fail, skip the line
+            try:
+                vals = [float(p) for p in parts]
+            except ValueError:
+                continue
+            if len(vals) <= metadata_columns:
+                continue
+            rows.append(vals)
+
+    if not rows:
+        raise ValueError(f"No numeric rows found in {path_p}")
+
+    data = np.array(rows, dtype=float)
+    return data[:, metadata_columns:]
 
 
 def interleaved_to_complex(csi: np.ndarray) -> np.ndarray:
