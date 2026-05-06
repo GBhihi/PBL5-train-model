@@ -35,7 +35,21 @@ def load_numeric_csv(path: str | Path, metadata_columns: int = 1) -> np.ndarray:
     if not rows:
         raise ValueError(f"No numeric rows found in {path_p}")
 
-    data = np.array(rows, dtype=float)
+    # keep only rows that match the most common number of fields (skip malformed lines)
+    from collections import Counter
+
+    lengths = [len(r) for r in rows]
+    most_common_len = Counter(lengths).most_common(1)[0][0]
+    filtered = [r for r in rows if len(r) == most_common_len]
+
+    if not filtered:
+        raise ValueError(f"No rows with consistent field count found in {path_p}")
+
+    if len(filtered) != len(rows):
+        # prefer not to import warnings at module level; emit simple print for visibility
+        print(f"Warning: skipped {len(rows)-len(filtered)} malformed rows from {path_p}")
+
+    data = np.array(filtered, dtype=float)
     return data[:, metadata_columns:]
 
 
