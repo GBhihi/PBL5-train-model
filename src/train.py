@@ -22,6 +22,7 @@ from src.model import build_model
 from src.preprocess import align_feature_dims_multi, apply_hampel, butterworth_lowpass, load_csi_csv
 from src.spectrogram import convert_segments_to_spectrogram
 from src.window import create_segments
+from src import amp_phase
 
 
 def _load_json_config(config_path: str | None) -> dict[str, object]:
@@ -55,6 +56,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--test-size", type=float, default=0.2)
 	parser.add_argument("--random-state", type=int, default=42)
 	parser.add_argument("--nperseg", type=int, default=128)
+	# amp/phase processing is always enabled
+	parser.add_argument("--phase-mode", choices=["unwrap", "sincos"], default="sincos", help="How to handle phase: unwrap+normalize or encode as sin/cos")
+	parser.add_argument("--amp-log", action="store_true", help="Apply log-scale to amplitude before normalization")
 	parser.add_argument("--use-hampel", action="store_true")
 	parser.add_argument("--learning-rate", type=float, default=1e-3)
 	parser.add_argument("--output-dir", default="experiments/results")
@@ -195,9 +199,41 @@ def _predict_proba(model: nn.Module, loader: DataLoader, device: torch.device) -
 
 def train(args: argparse.Namespace) -> dict[str, object]:
 	print("Loading CSI files...")
-	sit = load_csi_csv(args.sit_path)
-	stand = load_csi_csv(args.stand_path)
-	walk = load_csi_csv(args.walk_path)
+	def _load_amp_phase(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
+		# use amp_phase.process_file to support interleaved or numeric complex CSVs
+		amp, phase, _, _ = amp_phase.process_file(path, metadata_columns=1, mode="auto", out_prefix=None, save=False)
+		return amp, phase
+
+	def _prepare_from_amp_phase(path: str | Path) -> np.ndarray:
+		amp, phase = _load_amp_phase(path)
+
+		# Step 2: amplitude processing
+		if args.amp_log:
+			amp = np.log(amp + 1e-8)
+		# zero-mean, unit-variance per-subcarrier (time axis = 0)
+		amp_mu = np.mean(amp, axis=0, keepdims=True)
+		amp_sigma = np.std(amp, axis=0, keepdims=True) + 1e-8
+		amp_norm = (amp - amp_mu) / amp_sigma
+
+		# Step 3: phase processing
+		if args.phase_mode == "unwrap":
+			phase_unwrap = np.unwrap(phase, axis=0)
+			phase_mu = np.mean(phase_unwrap, axis=0, keepdims=True)
+			phase_sigma = np.std(phase_unwrap, axis=0, keepdims=True) + 1e-8
+			phase_norm = (phase_unwrap - phase_mu) / phase_sigma
+			# combine amp + phase_norm
+			combined = np.concatenate((amp_norm, phase_norm), axis=1)
+		else:  # sincos encoding
+			phase_cos = np.cos(phase)
+			phase_sin = np.sin(phase)
+			combined = np.concatenate((amp_norm, phase_cos, phase_sin), axis=1)
+
+		return combined
+
+	# Always prepare data from amplitude/phase
+	sit = _prepare_from_amp_phase(args.sit_path)
+	stand = _prepare_from_amp_phase(args.stand_path)
+	walk = _prepare_from_amp_phase(args.walk_path)
 
 	# Align feature dimensions across all classes by truncating to smallest feature dim
 	sit, stand, walk = align_feature_dims_multi(sit, stand, walk)
