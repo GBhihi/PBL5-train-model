@@ -11,14 +11,15 @@ sys.path.append(os.path.abspath(os.path.dirname(__file__)))
 from model import build_model
 from preprocess import (
     butterworth_lowpass,
+    load_csi_csv,
 )
 from spectrogram import convert_segments_to_spectrogram
 from window import create_segments
 
 # --- 3. Đường dẫn file ---
 BASE_DIR = os.path.dirname(__file__)
-model_path = os.path.join(BASE_DIR, "../checkpoints(1)/lstmcnn.pt")
-csv_path = os.path.join(BASE_DIR, "../data/test/test_stand1.csv")
+model_path = os.path.join(BASE_DIR, "../checkpoints_amp/lstmcnn.pt")
+csv_path = os.path.join(BASE_DIR, "../data/test/test_sit.csv")
 # --- 4. Load checkpoint trước để lấy metadata ---
 ckpt = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
 
@@ -65,6 +66,8 @@ step = int(train_args.get("step", 128))
 cutoff = float(train_args.get("cutoff", 0.1))
 use_hampel = bool(train_args.get("use_hampel", False))
 nperseg = train_args.get("nperseg", None)
+# amp/phase options saved from training
+amp_log = bool(train_args.get("amp_log", False))
 
 if saved_input_shape is None:
     raise ValueError("Checkpoint missing input_shape; cannot align test data like train.")
@@ -115,12 +118,10 @@ def _apply_global_normalizer(x: np.ndarray, max_abs: float, eps: float = 1e-8) -
 from amp_phase import process_file as _process_amp_phase
 
 
-# Prepare data using amp/phase like training
 def _prepare_from_amp_phase(path: str) -> np.ndarray:
     amp, phase, _, _ = _process_amp_phase(path, metadata_columns=1, mode="auto", out_prefix=None, save=False)
 
     # Step 2: amplitude processing
-    amp_log = bool(train_args.get("amp_log", False))
     if amp_log:
         amp = np.log(amp + 1e-8)
     amp_mu = np.mean(amp, axis=0, keepdims=True)
@@ -131,6 +132,7 @@ def _prepare_from_amp_phase(path: str) -> np.ndarray:
     phase_cos = np.cos(phase)
     phase_sin = np.sin(phase)
     combined = np.concatenate((amp_norm, phase_cos, phase_sin), axis=1)
+
     return combined
 
 

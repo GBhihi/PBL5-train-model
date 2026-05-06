@@ -56,8 +56,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--test-size", type=float, default=0.2)
 	parser.add_argument("--random-state", type=int, default=42)
 	parser.add_argument("--nperseg", type=int, default=128)
-	# amp/phase processing is always enabled
-	parser.add_argument("--phase-mode", choices=["unwrap", "sincos"], default="sincos", help="How to handle phase: unwrap+normalize or encode as sin/cos")
+	# amp/phase processing is always enabled (phase encoded as sin/cos)
 	parser.add_argument("--amp-log", action="store_true", help="Apply log-scale to amplitude before normalization")
 	parser.add_argument("--use-hampel", action="store_true")
 	parser.add_argument("--learning-rate", type=float, default=1e-3)
@@ -215,18 +214,10 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		amp_sigma = np.std(amp, axis=0, keepdims=True) + 1e-8
 		amp_norm = (amp - amp_mu) / amp_sigma
 
-		# Step 3: phase processing
-		if args.phase_mode == "unwrap":
-			phase_unwrap = np.unwrap(phase, axis=0)
-			phase_mu = np.mean(phase_unwrap, axis=0, keepdims=True)
-			phase_sigma = np.std(phase_unwrap, axis=0, keepdims=True) + 1e-8
-			phase_norm = (phase_unwrap - phase_mu) / phase_sigma
-			# combine amp + phase_norm
-			combined = np.concatenate((amp_norm, phase_norm), axis=1)
-		else:  # sincos encoding
-			phase_cos = np.cos(phase)
-			phase_sin = np.sin(phase)
-			combined = np.concatenate((amp_norm, phase_cos, phase_sin), axis=1)
+		# Step 3: phase processing (encode as sin/cos)
+		phase_cos = np.cos(phase)
+		phase_sin = np.sin(phase)
+		combined = np.concatenate((amp_norm, phase_cos, phase_sin), axis=1)
 
 		return combined
 
