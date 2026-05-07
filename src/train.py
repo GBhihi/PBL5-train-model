@@ -251,7 +251,6 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	x = np.vstack((x_sit, x_stand, x_walk))
 	y = np.hstack((y_sit, y_stand, y_walk))
 
-	x = _finalize_segments_before_split(x, args.model_type, args.nperseg)
 
 	x_train, x_test, y_train, y_test = train_test_split(
 		x,
@@ -261,11 +260,16 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		stratify=y,
 	)
 
+
 	# Apply augmentation only to training set (configurable via JSON 'augmentation' object)
 	aug_cfg = getattr(args, "augmentation", {}) or {}
 	if aug_cfg:
 		print("Applying augmentation to training set:", aug_cfg)
 		x_train, y_train = augment_training_set(x_train, y_train, aug_cfg)
+
+	# Finalize segments (e.g., convert to spectrogram for cnn2d) AFTER augmentation
+	x_train = _finalize_segments_before_split(x_train, args.model_type, args.nperseg)
+	x_test = _finalize_segments_before_split(x_test, args.model_type, args.nperseg)
 
 	print("Fitting standardizer on training set only...")
 	mu, sigma = _fit_standardizer_3d(x_train)
