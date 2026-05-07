@@ -5,7 +5,7 @@ from torch import nn
 
 
 class Cnn2dClassifier(nn.Module):
-	def __init__(self, in_channels: int, num_classes: int = 2):
+	def __init__(self, in_channels: int, num_classes: int = 2, dropout: float = 0.0):
 		super().__init__()
 		self.features = nn.Sequential(
 			nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
@@ -16,12 +16,11 @@ class Cnn2dClassifier(nn.Module):
 			nn.MaxPool2d(2),
 			nn.AdaptiveAvgPool2d((4, 4)),
 		)
-		self.classifier = nn.Sequential(
-			nn.Flatten(),
-			nn.Linear(64 * 4 * 4, 128),
-			nn.ReLU(),
-			nn.Linear(128, num_classes),
-		)
+		layers = [nn.Flatten(), nn.Linear(64 * 4 * 4, 128), nn.ReLU()]
+		if dropout and dropout > 0.0:
+			layers.insert(2, nn.Dropout(dropout))
+		layers += [nn.Linear(128, num_classes)]
+		self.classifier = nn.Sequential(*layers)
 
 	def forward(self, x: torch.Tensor) -> torch.Tensor:
 		x = self.features(x)
@@ -29,7 +28,7 @@ class Cnn2dClassifier(nn.Module):
 
 
 class LstmCnnClassifier(nn.Module):
-	def __init__(self, feature_dim: int, num_classes: int = 2):
+	def __init__(self, feature_dim: int, num_classes: int = 2, dropout: float = 0.5):
 		super().__init__()
 		self.conv = nn.Sequential(
 			nn.Conv1d(feature_dim, 64, kernel_size=5, padding=2),
@@ -40,12 +39,11 @@ class LstmCnnClassifier(nn.Module):
 			nn.MaxPool1d(kernel_size=2),
 		)
 		self.lstm = nn.LSTM(input_size=128, hidden_size=64, batch_first=True)
-		self.classifier = nn.Sequential(
-			nn.Dropout(0.5),
-			nn.Linear(64, 64),
-			nn.ReLU(),
-			nn.Linear(64, num_classes),
-		)
+		cls_layers = []
+		if dropout and dropout > 0.0:
+			cls_layers.append(nn.Dropout(dropout))
+		cls_layers += [nn.Linear(64, 64), nn.ReLU(), nn.Linear(64, num_classes)]
+		self.classifier = nn.Sequential(*cls_layers)
 
 	def forward(self, x: torch.Tensor) -> torch.Tensor:
 		# x: (batch, time, feature_dim)
@@ -57,13 +55,13 @@ class LstmCnnClassifier(nn.Module):
 		return self.classifier(last_step)
 
 
-def build_model(model_type: str, input_shape: tuple[int, ...], num_classes: int = 2) -> nn.Module:
+def build_model(model_type: str, input_shape: tuple[int, ...], num_classes: int = 2, dropout: float = 0.0) -> nn.Module:
 	key = model_type.lower()
 	if key == "cnn2d":
 		in_channels = input_shape[-1]
-		return Cnn2dClassifier(in_channels=in_channels, num_classes=num_classes)
+		return Cnn2dClassifier(in_channels=in_channels, num_classes=num_classes, dropout=dropout)
 	if key == "lstmcnn":
 		feature_dim = input_shape[-1]
-		return LstmCnnClassifier(feature_dim=feature_dim, num_classes=num_classes)
+		return LstmCnnClassifier(feature_dim=feature_dim, num_classes=num_classes, dropout=dropout)
 	raise ValueError(f"Unsupported model_type: {model_type}")
 

@@ -125,3 +125,95 @@ def get_los_csi(csi: np.ndarray, amplitude_threshold: float = None, std_threshol
     return csi[:, los_idx]
 
 
+def add_gaussian_noise(x: np.ndarray, std: float) -> np.ndarray:
+    if std is None or std <= 0:
+        return x.copy()
+    noise = np.random.normal(0, std, size=x.shape)
+    return x + noise
+
+
+def time_shift_segments(x: np.ndarray, max_shift_pct: float) -> np.ndarray:
+    if max_shift_pct is None or max_shift_pct <= 0:
+        return x.copy()
+    out = []
+    T = x.shape[1]
+    max_shift = int(T * max_shift_pct)
+    for seg in x:
+        shift = np.random.randint(-max_shift, max_shift + 1)
+        if shift == 0:
+            out.append(seg.copy())
+            continue
+        if shift > 0:
+            s = np.concatenate((seg[shift:], np.zeros((shift, seg.shape[1]))), axis=0)
+        else:
+            s = np.concatenate((np.zeros((-shift, seg.shape[1])), seg[:shift]), axis=0)
+        out.append(s)
+    return np.stack(out)
+
+
+def scale_segments(x: np.ndarray, scale_min: float, scale_max: float) -> np.ndarray:
+    if scale_min is None or scale_max is None:
+        return x.copy()
+    scales = np.random.uniform(scale_min, scale_max, size=(x.shape[0], 1, 1))
+    return x * scales
+
+
+def mixup(x: np.ndarray, y: np.ndarray, alpha: float) -> tuple[np.ndarray, np.ndarray]:
+    if alpha is None or alpha <= 0:
+        return x.copy(), y.copy()
+    lam = np.random.beta(alpha, alpha, size=x.shape[0])
+    idx = np.random.permutation(x.shape[0])
+    x2 = x[idx]
+    y2 = y[idx]
+    lam_x = lam.reshape(-1, 1, 1)
+    x_mix = x * lam_x + x2 * (1 - lam_x)
+    # for labels, create soft labels as one-hot floats
+    num_classes = int(np.max(y) + 1)
+    y_one = np.eye(num_classes)[y]
+    y2_one = np.eye(num_classes)[y2]
+    lam_y = lam.reshape(-1, 1)
+    y_mix = y_one * lam_y + y2_one * (1 - lam_y)
+    # Convert mixed soft labels back to hard labels by argmax (keeps training loop simple)
+    y_mix_hard = np.argmax(y_mix, axis=1).astype(np.int64)
+    return x_mix, y_mix_hard
+
+
+def augment_training_set(x: np.ndarray, y: np.ndarray, config: dict) -> tuple[np.ndarray, np.ndarray]:
+    """Apply simple augmentations and return augmented dataset appended to original.
+
+    Config keys: noise_std, time_shift_pct, scale_min, scale_max, mixup_alpha
+    """
+    aug_x = []
+    aug_y = []
+    noise_std = config.get("noise_std", 0.0)
+    time_shift_pct = config.get("time_shift_pct", 0.0)
+    scale_min = config.get("scale_min", 1.0)
+    scale_max = config.get("scale_max", 1.0)
+    mixup_alpha = config.get("mixup_alpha", 0.0)
+
+    # simple single-step augmentations
+    if noise_std and noise_std > 0:
+        aug_x.append(add_gaussian_noise(x, noise_std))
+        aug_y.append(y.copy())
+    if time_shift_pct and time_shift_pct > 0:
+        aug_x.append(time_shift_segments(x, time_shift_pct))
+        aug_y.append(y.copy())
+    if (scale_min is not None and scale_max is not None) and (scale_min != 1.0 or scale_max != 1.0):
+        aug_x.append(scale_segments(x, scale_min, scale_max))
+        aug_y.append(y.copy())
+    if mixup_alpha and mixup_alpha > 0:
+        xm, ym = mixup(x, y, mixup_alpha)
+        aug_x.append(xm)
+        aug_y.append(ym)
+
+    if not aug_x:
+        return x, y
+
+    aug_x = np.concatenate(aug_x, axis=0)
+    aug_y = np.concatenate(aug_y, axis=0)
+
+    x_all = np.concatenate((x, aug_x), axis=0)
+    y_all = np.concatenate((y, aug_y), axis=0)
+    return x_all, y_all
+
+
