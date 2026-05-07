@@ -332,7 +332,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	sch_cfg = getattr(args, "scheduler", None)
 	if isinstance(sch_cfg, dict) and sch_cfg.get("type") == "ReduceLROnPlateau":
 		scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-			optimizer, factor=sch_cfg.get("factor", 0.5), patience=sch_cfg.get("patience", 3), verbose=True
+			optimizer, factor=sch_cfg.get("factor", 0.5), patience=sch_cfg.get("patience", 3)
 		)
 
 	history: dict[str, list[float]] = {
