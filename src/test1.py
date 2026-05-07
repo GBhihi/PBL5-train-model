@@ -178,7 +178,8 @@ inputs = torch.tensor(segments, dtype=torch.float32, device=device)
 
 # --- 12. Build model đúng kiểu ---
 input_shape = segments.shape[1:]
-model = build_model(model_type=model_type, input_shape=input_shape, num_classes=num_classes)
+dropout = float(train_args.get("dropout", 0.0))
+model = build_model(model_type=model_type, input_shape=input_shape, num_classes=num_classes, dropout=dropout)
 model.load_state_dict(sd)
 model = model.to(device)
 model.eval()
