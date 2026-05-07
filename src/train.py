@@ -19,7 +19,13 @@ except Exception:
 
 from src.evaluate import evaluate_classification
 from src.model import build_model
-from src.preprocess import align_feature_dims_multi, apply_hampel, butterworth_lowpass, load_csi_csv
+from src.preprocess import (
+	align_feature_dims_multi,
+	apply_hampel,
+	butterworth_lowpass,
+	load_csi_csv,
+	augment_training_set,
+)
 from src.spectrogram import convert_segments_to_spectrogram
 from src.window import create_segments
 from src import amp_phase
@@ -56,6 +62,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--test-size", type=float, default=0.2)
 	parser.add_argument("--random-state", type=int, default=42)
 	parser.add_argument("--nperseg", type=int, default=128)
+	# optimizer / regularization / augmentation options (can be provided in JSON config)
+	parser.add_argument("--optimizer", default="AdamW", help="Optimizer name (AdamW or SGD)")
+	parser.add_argument("--weight-decay", type=float, default=0.0, help="Weight decay for optimizer")
+	parser.add_argument("--dropout", type=float, default=0.0, help="Dropout probability to pass to model")
 	# amp/phase processing is always enabled (phase encoded as sin/cos)
 	parser.add_argument("--amp-log", action="store_true", help="Apply log-scale to amplitude before normalization")
 	parser.add_argument("--use-hampel", action="store_true")
@@ -251,6 +261,12 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		stratify=y,
 	)
 
+	# Apply augmentation only to training set (configurable via JSON 'augmentation' object)
+	aug_cfg = getattr(args, "augmentation", {}) or {}
+	if aug_cfg:
+		print("Applying augmentation to training set:", aug_cfg)
+		x_train, y_train = augment_training_set(x_train, y_train, aug_cfg)
+
 	print("Fitting standardizer on training set only...")
 	mu, sigma = _fit_standardizer_3d(x_train)
 	x_train = _apply_standardizer(x_train, mu, sigma)
@@ -299,10 +315,25 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		print(list(zip(batch_labels.tolist(), batch_counts.tolist())))
 		break
 
-	model = build_model(model_type=args.model_type, input_shape=x_train.shape[1:], num_classes=3)
+	model = build_model(model_type=args.model_type, input_shape=x_train.shape[1:], num_classes=3, dropout=getattr(args, "dropout", 0.0))
 	model = model.to(device)
 	criterion = nn.CrossEntropyLoss()
-	optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+
+	# configure optimizer with weight decay
+	opt_name = getattr(args, "optimizer", "adamw")
+	wd = getattr(args, "weight_decay", 0.0)
+	if isinstance(opt_name, str) and opt_name.lower().startswith("sgd"):
+		optimizer = torch.optim.SGD(model.parameters(), lr=args.learning_rate, momentum=0.9, weight_decay=wd)
+	else:
+		optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=wd)
+
+	# scheduler (support ReduceLROnPlateau from config scheduler dict)
+	scheduler = None
+	sch_cfg = getattr(args, "scheduler", None)
+	if isinstance(sch_cfg, dict) and sch_cfg.get("type") == "ReduceLROnPlateau":
+		scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+			optimizer, factor=sch_cfg.get("factor", 0.5), patience=sch_cfg.get("patience", 3), verbose=True
+		)
 
 	history: dict[str, list[float]] = {
 		"train_loss": [],
@@ -317,7 +348,12 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 
 	best_val_loss = float("inf")
 	best_state: dict[str, torch.Tensor] | None = None
-	patience = 5 if args.model_type == "lstmcnn" else None
+	# early stopping patience from config
+	es_cfg = getattr(args, "early_stopping", None)
+	if isinstance(es_cfg, dict):
+		patience = int(es_cfg.get("patience", 5))
+	else:
+		patience = 5
 	wait = 0
 
 	for epoch in range(1, args.epochs + 1):
@@ -351,6 +387,12 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 				if wait >= patience:
 					print("Early stopping triggered.")
 					break
+
+		# step scheduler if present
+		if scheduler is not None:
+			# ReduceLROnPlateau expects metric
+			if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+				scheduler.step(val_loss)
 
 	if best_state is not None:
 		model.load_state_dict(best_state)
