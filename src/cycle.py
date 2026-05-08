@@ -2,15 +2,20 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import welch
-from preprocess import load_csi_csv
+from src.preprocess import load_csi_csv
+import traceback
 
 # --- 1. Tham số ---
 csv_path = "data/raw/walk.csv"  # file CSI
 sample_rate = 100  # Hz
 
 # --- 2. Load dữ liệu ---
-data = load_csi_csv(csv_path)
-print("Data shape:", data.shape)
+try:
+    data = load_csi_csv(csv_path)
+    print("Data shape:", data.shape)
+except Exception:
+    traceback.print_exc()
+    raise
 
 # --- 3. Chọn 1 cột đại diện / trung bình ---
 signal = data.mean(axis=1)

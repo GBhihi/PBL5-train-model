@@ -17,10 +17,30 @@ from window import create_segments
 
 # --- 3. Đường dẫn file ---
 BASE_DIR = os.path.dirname(__file__)
-model_path = os.path.join(BASE_DIR, "../checkpoints(1)/lstmcnn.pt")
+model_path = os.path.join(BASE_DIR, "../checkpoints(7)/cnn2d.pt")
 csv_path = os.path.join(BASE_DIR, "../data/test/test_stand1.csv")
 # --- 4. Load checkpoint trước để lấy metadata ---
-ckpt = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
+# Load robustly across PyTorch versions:
+try:
+    # Prefer full object load when available (needed for saved metadata)
+    ckpt = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
+except TypeError:
+    # older torch versions may not accept weights_only kwarg
+    ckpt = torch.load(model_path, map_location=torch.device("cpu"))
+except Exception as e:
+    # Some PyTorch versions use safe unpickling and may block numpy internals.
+    # Try to allowlist NumPy's internal reconstruct function if present, then retry.
+    core = getattr(np, "_core", None) or getattr(np, "core", None)
+    ma = getattr(core, "multiarray", None) if core is not None else None
+    reconstruct = getattr(ma, "_reconstruct", None) if ma is not None else None
+    if reconstruct is not None:
+        try:
+            torch.serialization.add_safe_globals([reconstruct])
+        except Exception:
+            pass
+        ckpt = torch.load(model_path, map_location=torch.device("cpu"))
+    else:
+        raise
 
 if isinstance(ckpt, dict):
     model_type = ckpt.get("model_type", "lstmcnn")
@@ -172,11 +192,22 @@ segments = _apply_global_normalizer(segments, global_max_abs)
 # --- 11. Tensor input ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
-inputs = torch.tensor(segments, dtype=torch.float32, device=device)
+
+# Build model using saved input_shape from checkpoint if available (ensures channel/order match)
+model_input_shape = tuple(saved_input_shape) if saved_input_shape is not None else tuple(segments.shape[1:])
+# If CNN2D, transpose numpy array from (N, H, W, C) -> (N, C, H, W) to match training input ordering
+if model_type == "cnn2d":
+    inputs_np = np.transpose(segments, (0, 3, 1, 2))
+else:
+    inputs_np = segments
+
+# Create tensor from numpy input
+inputs = torch.tensor(inputs_np.astype(np.float32), device=device)
 
 # --- 12. Build model đúng kiểu ---
-input_shape = segments.shape[1:]
-model = build_model(model_type=model_type, input_shape=input_shape, num_classes=num_classes)
+# Build model with same dropout as training (if present in checkpoint args)
+dropout = float(train_args.get("dropout", 0.0))
+model = build_model(model_type=model_type, input_shape=model_input_shape, num_classes=num_classes, dropout=dropout)
 model.load_state_dict(sd)
 model = model.to(device)
 model.eval()
