@@ -17,7 +17,7 @@ from window import create_segments
 
 # --- 3. Đường dẫn file ---
 BASE_DIR = os.path.dirname(__file__)
-model_path = os.path.join(BASE_DIR, "../checkpoints(7)/cnn2d.pt")
+model_path = os.path.join(BASE_DIR, "../checkpoints_amp1/lstmcnn.pt")
 csv_path = os.path.join(BASE_DIR, "../data/test/test_stand1.csv")
 # --- 4. Load checkpoint trước để lấy metadata ---
 # Load robustly across PyTorch versions:

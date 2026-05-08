@@ -4,7 +4,7 @@
   "stand_path": "data/raw/stand.csv",
   "walk_path": "data/raw/walk.csv",
   "window_size": 256,
-  "step": 64,
+  "step": 128,
   "cutoff": 0.1,
   "epochs": 40,
   "batch_size": 32,
