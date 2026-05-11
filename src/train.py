@@ -53,8 +53,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--config", default=None, help="Path to JSON config file")
 	parser.add_argument("--model-type", choices=["cnn2d", "lstmcnn"], default="cnn2d")
 	parser.add_argument("--data-csv", dest="data_csv", default=None, help="Path to merged CSV file (overrides sit/stand/walk)")
-	parser.add_argument("--window-size", type=int, default=256)
-	parser.add_argument("--step", type=int, default=128)
+	parser.add_argument("--window-size", type=int, default=2048)
+	parser.add_argument("--step", type=int, default=1024)
 	parser.add_argument("--cutoff", type=float, default=0.1)
 	parser.add_argument("--epochs", type=int, default=30)
 	parser.add_argument("--batch-size", type=int, default=32)
@@ -143,7 +143,17 @@ def _read_merged_csv(path: str) -> tuple[np.ndarray, np.ndarray]:
 		for r in reader:
 			if not r:
 				continue
+			# remove trailing empty cells at end (safety) and empty cells immediately
+			# before the final label (handles patterns like "...,33,,0")
+			while len(r) > 1 and r[-1] == "":
+				r.pop()
+			# remove any empty cells directly before the last column (label)
+			while len(r) >= 2 and r[-2] == "":
+				r.pop(-2)
 			# last column should be label
+			if len(r) < 2:
+				# not enough columns (no features + label), skip
+				continue
 			*feat, lab = r
 			parsed_feat = []
 			for v in feat:
@@ -320,7 +330,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		y = np.hstack((y_sit, y_stand, y_walk))
 
 
-	x_train, x_test, y_train, y_test = train_test_split(
+	x_train, x_val, y_train, y_val = train_test_split(
 		x,
 		y,
 		test_size=args.test_size,
@@ -337,38 +347,38 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 
 	# Finalize segments (e.g., convert to spectrogram for cnn2d) AFTER augmentation
 	x_train = _finalize_segments_before_split(x_train, args.model_type, args.nperseg)
-	x_test = _finalize_segments_before_split(x_test, args.model_type, args.nperseg)
+	x_val = _finalize_segments_before_split(x_val, args.model_type, args.nperseg)
 
 	print("Fitting standardizer on training set only...")
 	mu, sigma = _fit_standardizer_3d(x_train)
 	x_train = _apply_standardizer(x_train, mu, sigma)
-	x_test = _apply_standardizer(x_test, mu, sigma)
+	x_val = _apply_standardizer(x_val, mu, sigma)
 
 	print("Applying global normalization from training set only...")
 	max_abs = _fit_global_normalizer(x_train)
 	x_train = _apply_global_normalizer(x_train, max_abs)
-	x_test = _apply_global_normalizer(x_test, max_abs)
+	x_val = _apply_global_normalizer(x_val, max_abs)
 
 	labels, counts = np.unique(y_train, return_counts=True)
 	print("Train label distribution:")
 	for label, count in zip(labels, counts):
 		print(f"Label {label}: {count} samples")
 
-	labels_val, counts_val = np.unique(y_test, return_counts=True)
+	labels_val, counts_val = np.unique(y_val, return_counts=True)
 	print("\nValidation label distribution:")
 	for label, count in zip(labels_val, counts_val):
 		print(f"Label {label}: {count} samples")
 
-	print(f"Train shape: {x_train.shape}, Test shape: {x_test.shape}")
+	print(f"Train shape: {x_train.shape}, Validation shape: {x_val.shape}")
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	print(f"Using device: {device}")
 	run_dir = _create_run_dir(args.output_dir, args.run_name, args.model_type)
 	print(f"Run directory: {run_dir}")
 
 	x_train_tensor = _to_torch_input(x_train, args.model_type)
-	x_test_tensor = _to_torch_input(x_test, args.model_type)
+	x_val_tensor = _to_torch_input(x_val, args.model_type)
 	y_train_tensor = torch.from_numpy(y_train.astype(np.int64))
-	y_test_tensor = torch.from_numpy(y_test.astype(np.int64))
+	y_val_tensor = torch.from_numpy(y_val.astype(np.int64))
 
 	train_loader = DataLoader(
 		TensorDataset(x_train_tensor, y_train_tensor),
@@ -376,7 +386,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		shuffle=True,
 	)
 	val_loader = DataLoader(
-		TensorDataset(x_test_tensor, y_test_tensor),
+		TensorDataset(x_val_tensor, y_val_tensor),
 		batch_size=args.batch_size,
 		shuffle=False,
 	)
@@ -473,7 +483,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		writer.close()
 
 	y_pred_prob = _predict_proba(model, val_loader, device)
-	result = evaluate_classification(y_test, y_pred_prob, labels=["sit", "stand", "walk"])
+	result = evaluate_classification(y_val, y_pred_prob, labels=["sit", "stand", "walk"])
 
 	print("Confusion Matrix:")
 	print(result["confusion_matrix"])
