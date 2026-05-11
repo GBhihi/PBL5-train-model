@@ -29,6 +29,7 @@ from src.preprocess import (
 from src.spectrogram import convert_segments_to_spectrogram
 from src.window import create_segments
 from src import amp_phase
+from typing import Iterable, Tuple
 
 
 def _load_json_config(config_path: str | None) -> dict[str, object]:
@@ -51,14 +52,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 	parser = argparse.ArgumentParser(description="Train CSI activity recognition model")
 	parser.add_argument("--config", default=None, help="Path to JSON config file")
 	parser.add_argument("--model-type", choices=["cnn2d", "lstmcnn"], default="cnn2d")
-	parser.add_argument("--sit_path", default="data/raw/sit.csv")
-	parser.add_argument("--stand_path", default="data/raw/stand.csv")
-	parser.add_argument("--walk_path", default="data/raw/walk.csv")
+	parser.add_argument("--data-csv", dest="data_csv", default=None, help="Path to merged CSV file (overrides sit/stand/walk)")
 	parser.add_argument("--window-size", type=int, default=256)
 	parser.add_argument("--step", type=int, default=128)
 	parser.add_argument("--cutoff", type=float, default=0.1)
 	parser.add_argument("--epochs", type=int, default=30)
-	parser.add_argument("--batch-size", type=int, default=16)
+	parser.add_argument("--batch-size", type=int, default=32)
 	parser.add_argument("--test-size", type=float, default=0.2)
 	parser.add_argument("--random-state", type=int, default=42)
 	parser.add_argument("--nperseg", type=int, default=128)
@@ -130,6 +129,64 @@ def _finalize_segments_before_split(x: np.ndarray, model_type: str, nperseg: int
 		print("Converting CSI segments to spectrogram...")
 		x = convert_segments_to_spectrogram(x, nperseg=nperseg)
 	return x
+
+
+def _read_merged_csv(path: str) -> tuple[np.ndarray, np.ndarray]:
+	"""Read merged CSV where last column is label. Returns (features, labels).
+
+	Non-numeric or empty feature cells are filled with 0. Labels are cast to int.
+	"""
+	rows: list[list[float]] = []
+	labels: list[int] = []
+	with open(path, 'r', newline='') as f:
+		reader = csv.reader(f)
+		for r in reader:
+			if not r:
+				continue
+			# last column should be label
+			*feat, lab = r
+			parsed_feat = []
+			for v in feat:
+				try:
+					parsed_feat.append(float(v))
+				except Exception:
+					parsed_feat.append(0.0)
+			try:
+				labels.append(int(float(lab)))
+			except Exception:
+				labels.append(-1)
+			rows.append(parsed_feat)
+	if not rows:
+		raise ValueError(f"No rows found in {path}")
+	X = np.array(rows, dtype=np.float32)
+	y = np.array(labels, dtype=np.int64)
+	return X, y
+
+
+def _create_segments_from_labeled_rows(data: np.ndarray, labels: np.ndarray, window_size: int, step: int) -> tuple[np.ndarray, np.ndarray]:
+	"""Create sliding windows from time-series rows with per-row labels.
+
+	A window is kept only if all label values inside the window are identical.
+	"""
+	x_list: list[np.ndarray] = []
+	y_list: list[int] = []
+	length = len(data)
+	for start in range(0, length - window_size + 1, step):
+		end = start + window_size
+		window_labels = labels[start:end]
+		# if any -1 label (unknown) or mixed labels -> skip
+		if window_labels.size == 0:
+			continue
+		if np.all(window_labels == window_labels[0]):
+			if window_labels[0] >= 0:
+				x_list.append(data[start:end])
+				y_list.append(int(window_labels[0]))
+		else:
+			# mixed labels -> skip
+			continue
+	if not x_list:
+		raise ValueError(f"No segments generated from labeled rows. Check window_size={window_size}, step={step}, data_length={length}")
+	return np.array(x_list), np.array(y_list)
 
 
 def _fit_standardizer_3d(x_train: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -231,25 +288,36 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 
 		return combined
 
-	# Always prepare data from amplitude/phase
-	sit = _prepare_from_amp_phase(args.sit_path)
-	stand = _prepare_from_amp_phase(args.stand_path)
-	walk = _prepare_from_amp_phase(args.walk_path)
+	# If merged CSV provided, load it and create labeled sliding windows
+	if getattr(args, 'data_csv', None):
+		data_csv_path = args.data_csv
+		print(f"Loading merged CSV: {data_csv_path}")
+		X_rows, row_labels = _read_merged_csv(data_csv_path)
+		# X_rows shape: (T, F)
+		# Apply cleaning along time axis
+		X_rows = _clean_raw_csi(X_rows, args.use_hampel, args.cutoff)
+		# Create segments from labeled rows; windows where labels within window differ are skipped
+		x, y = _create_segments_from_labeled_rows(X_rows, row_labels, window_size=args.window_size, step=args.step)
+	else:
+		# Always prepare data from amplitude/phase when separate files provided
+		sit = _prepare_from_amp_phase(args.sit_path)
+		stand = _prepare_from_amp_phase(args.stand_path)
+		walk = _prepare_from_amp_phase(args.walk_path)
 
-	# Align feature dimensions across all classes by truncating to smallest feature dim
-	sit, stand, walk = align_feature_dims_multi(sit, stand, walk)
+		# Align feature dimensions across all classes by truncating to smallest feature dim
+		sit, stand, walk = align_feature_dims_multi(sit, stand, walk)
 
-	sit = _clean_raw_csi(sit, args.use_hampel, args.cutoff)
-	stand = _clean_raw_csi(stand, args.use_hampel, args.cutoff)
-	walk = _clean_raw_csi(walk, args.use_hampel, args.cutoff)
+		sit = _clean_raw_csi(sit, args.use_hampel, args.cutoff)
+		stand = _clean_raw_csi(stand, args.use_hampel, args.cutoff)
+		walk = _clean_raw_csi(walk, args.use_hampel, args.cutoff)
 
-	x_sit, y_sit = create_segments(sit, 0, window_size=args.window_size, step=args.step)
-	x_stand, y_stand = create_segments(stand, 1, window_size=args.window_size, step=args.step)
-	# walk uses label index 2
-	x_walk, y_walk = create_segments(walk, 2, window_size=args.window_size, step=args.step)
+		x_sit, y_sit = create_segments(sit, 0, window_size=args.window_size, step=args.step)
+		x_stand, y_stand = create_segments(stand, 1, window_size=args.window_size, step=args.step)
+		# walk uses label index 2
+		x_walk, y_walk = create_segments(walk, 2, window_size=args.window_size, step=args.step)
 
-	x = np.vstack((x_sit, x_stand, x_walk))
-	y = np.hstack((y_sit, y_stand, y_walk))
+		x = np.vstack((x_sit, x_stand, x_walk))
+		y = np.hstack((y_sit, y_stand, y_walk))
 
 
 	x_train, x_test, y_train, y_test = train_test_split(
