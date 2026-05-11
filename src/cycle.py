@@ -2,7 +2,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import welch
-from src.preprocess import load_csi_csv
+from .preprocess import load_csi_csv
 import traceback
 
 # --- 1. Tham số ---
