@@ -168,6 +168,22 @@ def _read_merged_csv(path: str) -> tuple[np.ndarray, np.ndarray]:
 			rows.append(parsed_feat)
 	if not rows:
 		raise ValueError(f"No rows found in {path}")
+
+	# Check for inconsistent feature lengths and pad shorter rows with zeros.
+	lengths = [len(r) for r in rows]
+	unique_lengths = sorted(set(lengths))
+	if len(unique_lengths) > 1:
+		# Summarize counts per length
+		from collections import Counter
+
+		cnt = Counter(lengths)
+		summary = ", ".join([f"len={L}: {c}" for L, c in sorted(cnt.items())])
+		print(f"Warning: inconsistent feature lengths found in {path}: {summary}. Padding shorter rows with zeros to match the longest row.")
+		max_len = max(lengths)
+		for i, r in enumerate(rows):
+			if len(r) < max_len:
+				rows[i] = r + [0.0] * (max_len - len(r))
+
 	X = np.array(rows, dtype=np.float32)
 	y = np.array(labels, dtype=np.int64)
 	return X, y
