@@ -33,27 +33,61 @@ def prepare_input_from_csv(
 	if model_type.lower() == "cnn2d":
 		x = convert_segments_to_spectrogram(x)
 
-	x = normalize_global(x)
+	# Do not apply the training standardizer/global normalizer here —
+	# keep this function returning finalized segments (spectrogram for cnn2d)
+	# so that predict_action can apply the exact same standardizer saved in checkpoint.
 	return x
 
 
 def predict_action(
 	model_path: str | Path,
 	x: np.ndarray,
-	class_names: tuple[str, str] = ("sit", "stand"),
+	class_names: tuple[str, ...] = ("sit", "stand", "walk"),
 ) -> dict[str, object]:
 	checkpoint = torch.load(model_path, map_location="cpu")
 	model_type = checkpoint.get("model_type", "cnn2d")
 	input_shape = tuple(checkpoint["input_shape"])
+	# prefer class names from checkpoint when available
+	ck_classes = checkpoint.get("class_names")
+	if isinstance(ck_classes, (list, tuple)) and len(ck_classes) > 0:
+		class_names = tuple(ck_classes)
 
+	# load standardizer/global stats if saved during training
+	standardizer_mu = checkpoint.get("standardizer_mu", None)
+	standardizer_sigma = checkpoint.get("standardizer_sigma", None)
+	global_max_abs = checkpoint.get("global_max_abs", None)
+
+	# Apply standardizer (if present) BEFORE transposing for cnn2d
+	if standardizer_mu is not None and standardizer_sigma is not None:
+		mu = np.asarray(standardizer_mu)
+		sigma = np.asarray(standardizer_sigma)
+		try:
+			x = (x - mu) / (sigma + 1e-8)
+		except Exception:
+			# fallback: try broadcasting explicitly
+			x = (x - mu.astype(x.dtype)) / (sigma.astype(x.dtype) + 1e-8)
+
+	# Apply global normalizer if present, else fallback to local normalize
+	if global_max_abs is not None:
+		x = x / (float(global_max_abs) + 1e-8)
+	else:
+		x = normalize_global(x)
+
+	# For cnn2d the model expects (N, C, H, W)
 	if model_type == "cnn2d":
 		x = np.transpose(x, (0, 3, 1, 2))
 
+	# Build model using number of classes from class_names
 	model = build_model(model_type=model_type, input_shape=input_shape, num_classes=len(class_names))
-	state_dict = checkpoint.get("model") or checkpoint.get("state_dict")
-	if state_dict is None:
-		raise KeyError("Checkpoint missing model weights key: expected 'model' or 'state_dict'.")
-	model.load_state_dict(state_dict)
+
+	# Load state dict (support both 'model' and 'state_dict' keys)
+	state_dict = checkpoint.get("model") or checkpoint.get("state_dict") or checkpoint
+	# strip possible 'module.' prefixes
+	new_sd = {}
+	for k, v in state_dict.items():
+		new_k = k[len("module."):] if k.startswith("module.") else k
+		new_sd[new_k] = v
+	model.load_state_dict(new_sd)
 	model.eval()
 
 	with torch.no_grad():
