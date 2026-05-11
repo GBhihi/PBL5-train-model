@@ -18,8 +18,8 @@ from window import create_segments
 
 # --- 3. Đường dẫn file ---
 BASE_DIR = os.path.dirname(__file__)
-model_path = os.path.join(BASE_DIR, "../checkpoints_amp3/lstmcnn.pt")
-csv_path = os.path.join(BASE_DIR, "../data/test/test_sit.csv")
+model_path = os.path.join(BASE_DIR, "../checkpoints_amp4/lstmcnn.pt")
+csv_path = os.path.join(BASE_DIR, "../data/data.csv")
 # --- 4. Load checkpoint trước để lấy metadata ---
 ckpt = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
 
@@ -61,8 +61,8 @@ for k, v in sd.items():
 sd = new_sd
 
 # --- 5. Lấy đúng tham số train ---
-window_size = int(train_args.get("window_size", 256))
-step = int(train_args.get("step", 128))
+window_size = int(train_args.get("window_size", 2048))
+step = int(train_args.get("step", 1024))
 cutoff = float(train_args.get("cutoff", 0.1))
 use_hampel = bool(train_args.get("use_hampel", False))
 nperseg = train_args.get("nperseg", None)

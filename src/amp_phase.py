@@ -53,6 +53,50 @@ def load_numeric_csv(path: str | Path, metadata_columns: int = 1) -> np.ndarray:
     return data[:, metadata_columns:]
 
 
+def load_numeric_csv_with_metadata(path: str | Path, metadata_columns: int = 1) -> tuple[np.ndarray, np.ndarray]:
+    """Load numeric CSV and return (metadata, data).
+
+    Metadata are the first `metadata_columns` numeric fields.
+    Returns:
+    - metadata: (num_frames, metadata_columns)
+    - data: (num_frames, num_numeric_cols - metadata_columns)
+    """
+    rows: list[list[float]] = []
+    path_p = Path(path)
+    with path_p.open("r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            parts = line.strip().split(",")
+            if not parts:
+                continue
+            try:
+                vals = [float(p) for p in parts]
+            except ValueError:
+                continue
+            if len(vals) <= metadata_columns:
+                continue
+            rows.append(vals)
+
+    if not rows:
+        raise ValueError(f"No numeric rows found in {path_p}")
+
+    from collections import Counter
+
+    lengths = [len(r) for r in rows]
+    most_common_len = Counter(lengths).most_common(1)[0][0]
+    filtered = [r for r in rows if len(r) == most_common_len]
+
+    if not filtered:
+        raise ValueError(f"No rows with consistent field count found in {path_p}")
+
+    if len(filtered) != len(rows):
+        print(f"Warning: skipped {len(rows)-len(filtered)} malformed rows from {path_p}")
+
+    data = np.array(filtered, dtype=float)
+    metadata = data[:, :metadata_columns]
+    csi = data[:, metadata_columns:]
+    return metadata, csi
+
+
 def interleaved_to_complex(csi: np.ndarray) -> np.ndarray:
     """Convert interleaved real/imag columns into complex array.
 
@@ -150,6 +194,35 @@ def process_file(
         save_matrix_csv(phase, phase_path, header_prefix="phase_")
 
     return amp, phase, amp_path, phase_path
+
+
+def process_file_with_metadata(
+    path: str | Path,
+    metadata_columns: int = 1,
+    mode: str = "auto",
+    phase_degrees: bool = False,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """Load a CSV, compute amplitude/phase, and return metadata (e.g., RSSI).
+
+    Returns (amp, phase, metadata). If metadata_columns == 0, metadata is None.
+    """
+    p = Path(path)
+    if metadata_columns <= 0:
+        csi = load_numeric_csv(p, metadata_columns=0)
+        metadata = None
+    else:
+        metadata, csi = load_numeric_csv_with_metadata(p, metadata_columns=metadata_columns)
+
+    if mode == "auto":
+        interleaved = detect_interleaved(csi)
+    else:
+        interleaved = mode == "interleaved"
+
+    amp, phase = compute_amplitude_phase(csi, interleaved=interleaved)
+    if phase_degrees:
+        phase = np.degrees(phase)
+
+    return amp, phase, metadata
 
 
 def main() -> None:
