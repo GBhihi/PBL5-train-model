@@ -178,6 +178,25 @@ def mixup(x: np.ndarray, y: np.ndarray, alpha: float) -> tuple[np.ndarray, np.nd
     return x_mix, y_mix_hard
 
 
+def normalize_feature_lengths(rows: list[list[float]], target_len: int = 65) -> list[list[float]]:
+    """Ensure every feature row has length == target_len.
+
+    - If a row is shorter: pad with 0.0 to reach target_len.
+    - If a row is longer: truncate to target_len.
+    Returns the new list of rows.
+    """
+    out: list[list[float]] = []
+    for r in rows:
+        l = len(r)
+        if l == target_len:
+            out.append(r)
+        elif l < target_len:
+            out.append(r + [0.0] * (target_len - l))
+        else:
+            out.append(r[:target_len])
+    return out
+
+
 def augment_training_set(x: np.ndarray, y: np.ndarray, config: dict) -> tuple[np.ndarray, np.ndarray]:
     """Apply simple augmentations and return augmented dataset appended to original.
 
