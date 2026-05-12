@@ -1,25 +1,26 @@
 # test_predict.py
 import sys
 import os
+from pathlib import Path
 import torch
 import numpy as np
 
 # --- 1. Thêm đường dẫn src ---
-sys.path.append(os.path.abspath(os.path.dirname(__file__)))
+# --- 1. Thêm đường dẫn root của repo ---
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 # --- 2. Import module ---
-from model import build_model
-from preprocess import (
-    butterworth_lowpass,
-    load_csi_csv,
-)
-from spectrogram import convert_segments_to_spectrogram
-from window import create_segments
+from src.model import build_model
+from src.preprocess import butterworth_lowpass
+from src.spectrogram import convert_segments_to_spectrogram
+from src.window import create_segments
 
 # --- 3. Đường dẫn file ---
 BASE_DIR = os.path.dirname(__file__)
-model_path = os.path.join(BASE_DIR, "../checkpoints_amp4/lstmcnn.pt")
-csv_path = os.path.join(BASE_DIR, "../data/data.csv")
+model_path = os.path.join(BASE_DIR, "../checkpoints_amp5/lstmcnn.pt")
+csv_path = os.path.join(BASE_DIR, "../data/test/test.csv")
 # --- 4. Load checkpoint trước để lấy metadata ---
 ckpt = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
 
@@ -95,7 +96,7 @@ print(f"class_names  : {class_names}")
 
 def _clean_raw_csi(csi: np.ndarray, use_hampel: bool, cutoff: float) -> np.ndarray:
     if use_hampel:
-        from preprocess import apply_hampel
+        from src.preprocess import apply_hampel
         csi = apply_hampel(csi)
     return butterworth_lowpass(csi, cutoff=cutoff)
 
@@ -115,11 +116,34 @@ def _apply_global_normalizer(x: np.ndarray, max_abs: float, eps: float = 1e-8) -
     return x / (max_abs + eps)
 
 # --- 6. Load dữ liệu test ---
-from amp_phase import process_file as _process_amp_phase
+from src.amp_phase import process_file_with_metadata as _process_amp_phase
+from src.train import _to_torch_input
 
 
 def _prepare_from_amp_phase(path: str) -> np.ndarray:
-    amp, phase, _, _ = _process_amp_phase(path, metadata_columns=1, mode="auto", out_prefix=None, save=False)
+    amp, phase, metadata = _process_amp_phase(path, metadata_columns=1, mode="auto")
+    rssi = metadata[:, 0] if metadata is not None and metadata.shape[1] >= 1 else None
+
+    def _print_array_stats(name: str, arr: np.ndarray) -> None:
+        arr_min = float(np.min(arr))
+        arr_max = float(np.max(arr))
+        arr_mean = float(np.mean(arr))
+        arr_std = float(np.std(arr) + 1e-8)
+        z_min = float(np.min((arr - arr_mean) / arr_std))
+        z_max = float(np.max((arr - arr_mean) / arr_std))
+        print(f"{name} min/max : {arr_min:.6f} / {arr_max:.6f}")
+        print(f"{name} z-score: {z_min:.6f} .. {z_max:.6f}")
+
+    _print_array_stats("amp(raw)", amp)
+    _print_array_stats("phase(raw)", phase)
+
+    # Optional: scale amplitude by normalized RSSI if available (match train.py)
+    if rssi is not None:
+        r_min = float(np.min(rssi))
+        r_max = float(np.max(rssi))
+        den = (r_max - r_min) if (r_max - r_min) != 0 else 1.0
+        rssi_norm = (rssi - r_min) / den
+        amp = amp * rssi_norm[:, None]
 
     # Step 2: amplitude processing
     if amp_log:
@@ -151,6 +175,8 @@ if current_feature_dim < expected_feature_dim:
 if current_feature_dim > expected_feature_dim:
     data = data[:, :expected_feature_dim]
     print(f"Trim feature dim: {current_feature_dim} -> {expected_feature_dim}")
+print(f"Expected input shape (train): {saved_input_shape}")
+print(f"Current input shape (test) : {data.shape}")
 
 # --- 8. Preprocess giống train ---
 data = _clean_raw_csi(data, use_hampel, cutoff)
@@ -174,7 +200,7 @@ segments = _apply_global_normalizer(segments, global_max_abs)
 # --- 11. Tensor input ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
-inputs = torch.tensor(segments, dtype=torch.float32, device=device)
+inputs = _to_torch_input(segments, model_type).to(device)
 
 # --- 12. Build model đúng kiểu ---
 input_shape = segments.shape[1:]
@@ -187,6 +213,8 @@ model.eval()
 # --- 13. Predict ---
 with torch.no_grad():
     outputs = model(inputs)
+    print("\nSoftmax outputs (per segment):")
+    print(torch.softmax(outputs, dim=1))
     probs = torch.softmax(outputs, dim=1)
     predictions = torch.argmax(outputs, dim=1).cpu().numpy()
 
