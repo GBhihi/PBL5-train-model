@@ -3,7 +3,7 @@ import csv
 
 PORT = "COM9"
 BAUD = 115200
-OUTPUT = "walk3.csv"
+OUTPUT = "no1.csv"
 
 ser = serial.Serial(PORT, BAUD, timeout=1)
 
