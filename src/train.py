@@ -422,7 +422,22 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		print(list(zip(batch_labels.tolist(), batch_counts.tolist())))
 		break
 
-	model = build_model(model_type=args.model_type, input_shape=x_train.shape[1:], num_classes=3, dropout=getattr(args, "dropout", 0.0))
+	# Determine classes from labels present in training/validation sets
+	unique_labels_all = np.unique(np.concatenate((y_train, y_val)))
+	class_labels = sorted([int(x) for x in unique_labels_all.tolist()])
+	# Allow optional class name override from config/args
+	if getattr(args, "class_names", None):
+		class_names = list(getattr(args, "class_names"))
+	else:
+		if set(class_labels) == {0, 1}:
+			class_names = ["no_person", "person"]
+		else:
+			class_names = [f"class_{lbl}" for lbl in class_labels]
+
+	num_classes = len(class_names)
+	print(f"Detected classes: {class_labels} -> names={class_names}")
+
+	model = build_model(model_type=args.model_type, input_shape=x_train.shape[1:], num_classes=num_classes, dropout=getattr(args, "dropout", 0.0))
 	model = model.to(device)
 	criterion = nn.CrossEntropyLoss()
 
@@ -508,7 +523,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		writer.close()
 
 	y_pred_prob = _predict_proba(model, val_loader, device)
-	result = evaluate_classification(y_val, y_pred_prob, labels=["sit", "stand", "walk"])
+	result = evaluate_classification(y_val, y_pred_prob, labels=class_names)
 
 	print("Confusion Matrix:")
 	print(result["confusion_matrix"])
@@ -521,8 +536,8 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		{
 			"model_type": args.model_type,
 			"input_shape": list(x_train.shape[1:]),
-			"num_classes": 3,
-			"class_names": ["sit", "stand", "walk"],
+			"num_classes": num_classes,
+			"class_names": class_names,
 			"standardizer_mu": mu,
 			"standardizer_sigma": sigma,
 			"global_max_abs": max_abs,
