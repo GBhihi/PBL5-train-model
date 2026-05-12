@@ -25,6 +25,7 @@ from src.preprocess import (
 	butterworth_lowpass,
 	load_csi_csv,
 	augment_training_set,
+	normalize_feature_lengths,
 )
 from src.spectrogram import convert_segments_to_spectrogram
 from src.window import create_segments
@@ -169,20 +170,18 @@ def _read_merged_csv(path: str) -> tuple[np.ndarray, np.ndarray]:
 	if not rows:
 		raise ValueError(f"No rows found in {path}")
 
-	# Check for inconsistent feature lengths and pad shorter rows with zeros.
+	# Check for inconsistent feature lengths. Normalize to target length 65 by
+	# truncating longer rows and padding shorter rows with zeros. This follows
+	# the dataset decision to treat len=65 as the canonical feature dimension.
 	lengths = [len(r) for r in rows]
 	unique_lengths = sorted(set(lengths))
 	if len(unique_lengths) > 1:
-		# Summarize counts per length
 		from collections import Counter
 
 		cnt = Counter(lengths)
 		summary = ", ".join([f"len={L}: {c}" for L, c in sorted(cnt.items())])
-		print(f"Warning: inconsistent feature lengths found in {path}: {summary}. Padding shorter rows with zeros to match the longest row.")
-		max_len = max(lengths)
-		for i, r in enumerate(rows):
-			if len(r) < max_len:
-				rows[i] = r + [0.0] * (max_len - len(r))
+		print(f"Warning: inconsistent feature lengths found in {path}: {summary}. Normalizing rows to len=65 (pad/truncate).")
+		rows = normalize_feature_lengths(rows, target_len=65)
 
 	X = np.array(rows, dtype=np.float32)
 	y = np.array(labels, dtype=np.int64)
