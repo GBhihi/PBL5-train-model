@@ -19,8 +19,8 @@ from src.window import create_segments
 
 # --- 3. Đường dẫn file ---
 BASE_DIR = os.path.dirname(__file__)
-model_path = os.path.join(BASE_DIR, "../checkpoints_amp6/lstmcnn.pt")
-csv_path = os.path.join(BASE_DIR, "../data/test/test_stand2.csv")
+model_path = os.path.join(BASE_DIR, "../checkpoints_amp7/lstmcnn.pt")
+csv_path = os.path.join(BASE_DIR, "../data/raw/stand1.csv")
 # --- 4. Load checkpoint trước để lấy metadata ---
 ckpt = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
 
@@ -29,7 +29,7 @@ if isinstance(ckpt, dict):
     num_classes = ckpt.get("num_classes", 3)
     train_args = ckpt.get("args", {})
     saved_input_shape = ckpt.get("input_shape", None)
-    class_names = ckpt.get("class_names", ["sit", "stand", "walk"])
+    class_names = ckpt.get("class_names", None)
     standardizer_mu = ckpt.get("standardizer_mu", None)
     standardizer_sigma = ckpt.get("standardizer_sigma", None)
     global_max_abs = ckpt.get("global_max_abs", None)
@@ -42,6 +42,19 @@ else:
     standardizer_mu = None
     standardizer_sigma = None
     global_max_abs = None
+
+# Ensure class_names aligns with num_classes; provide sensible defaults for 2-class person/no-person
+try:
+    n_cls = int(num_classes)
+except Exception:
+    n_cls = 3
+if not class_names or len(class_names) != n_cls:
+    if n_cls == 2:
+        class_names = ["no_person", "person"]
+    elif n_cls == 3:
+        class_names = ["sit", "stand", "walk"]
+    else:
+        class_names = [f"class_{i}" for i in range(n_cls)]
 
 # lấy state_dict
 if isinstance(ckpt, dict):
