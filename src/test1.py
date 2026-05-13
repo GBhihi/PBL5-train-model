@@ -75,8 +75,8 @@ for k, v in sd.items():
 sd = new_sd
 
 # --- 5. Lấy đúng tham số train ---
-window_size = int(train_args.get("window_size", 2048))
-step = int(train_args.get("step", 1024))
+window_size = int(train_args.get("window_size", 4096))
+step = int(train_args.get("step", 2048))
 cutoff = float(train_args.get("cutoff", 0.1))
 use_hampel = bool(train_args.get("use_hampel", False))
 nperseg = train_args.get("nperseg", None)
