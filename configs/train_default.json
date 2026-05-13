@@ -1,8 +1,8 @@
 {
   "model_type": "lstmcnn",
   "data_csv": "data/data2.csv",
-  "window_size": 4096,
-  "step": 2048,
+  "window_size": 2048,
+  "step": 1024,
   "cutoff": 0.1,
   "epochs": 40,
   "batch_size": 32,

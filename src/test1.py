@@ -19,7 +19,7 @@ from src.window import create_segments
 
 # --- 3. Đường dẫn file ---
 BASE_DIR = os.path.dirname(__file__)
-model_path = os.path.join(BASE_DIR, "../checkpoints_amp8/lstmcnn.pt")
+model_path = os.path.join(BASE_DIR, "../checkpoints_amp9/lstmcnn.pt")
 csv_path = os.path.join(BASE_DIR, "../data/raw/no_test.csv")
 # --- 4. Load checkpoint trước để lấy metadata ---
 ckpt = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
@@ -75,8 +75,8 @@ for k, v in sd.items():
 sd = new_sd
 
 # --- 5. Lấy đúng tham số train ---
-window_size = int(train_args.get("window_size", 4096))
-step = int(train_args.get("step", 2048))
+window_size = int(train_args.get("window_size", 2048))
+step = int(train_args.get("step", 1024))
 cutoff = float(train_args.get("cutoff", 0.1))
 use_hampel = bool(train_args.get("use_hampel", False))
 nperseg = train_args.get("nperseg", None)
@@ -134,8 +134,7 @@ from src.train import _to_torch_input
 
 
 def _prepare_from_amp_phase(path: str) -> np.ndarray:
-    amp, phase, metadata = _process_amp_phase(path, metadata_columns=1, mode="auto")
-    rssi = metadata[:, 0] if metadata is not None and metadata.shape[1] >= 1 else None
+    amp, phase, _metadata = _process_amp_phase(path, metadata_columns=1, mode="auto")
 
     def _print_array_stats(name: str, arr: np.ndarray) -> None:
         arr_min = float(np.min(arr))
@@ -149,14 +148,6 @@ def _prepare_from_amp_phase(path: str) -> np.ndarray:
 
     _print_array_stats("amp(raw)", amp)
     _print_array_stats("phase(raw)", phase)
-
-    # Optional: scale amplitude by normalized RSSI if available (match train.py)
-    if rssi is not None:
-        r_min = float(np.min(rssi))
-        r_max = float(np.max(rssi))
-        den = (r_max - r_min) if (r_max - r_min) != 0 else 1.0
-        rssi_norm = (rssi - r_min) / den
-        amp = amp * rssi_norm[:, None]
 
     # Step 2: amplitude processing
     if amp_log:
