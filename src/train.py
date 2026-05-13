@@ -290,23 +290,13 @@ def _predict_proba(model: nn.Module, loader: DataLoader, device: torch.device) -
 
 def train(args: argparse.Namespace) -> dict[str, object]:
 	print("Loading CSI files...")
-	def _load_amp_phase(path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+	def _load_amp_phase(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
 		# use amp_phase.process_file_with_metadata to support interleaved or numeric complex CSVs
-		# metadata column 0 is treated as RSSI if present
-		amp, phase, metadata = amp_phase.process_file_with_metadata(path, metadata_columns=1, mode="auto")
-		rssi = metadata[:, 0] if metadata is not None and metadata.shape[1] >= 1 else None
-		return amp, phase, rssi
+		amp, phase, _metadata = amp_phase.process_file_with_metadata(path, metadata_columns=1, mode="auto")
+		return amp, phase
 
 	def _prepare_from_amp_phase(path: str | Path) -> np.ndarray:
-		amp, phase, rssi = _load_amp_phase(path)
-
-		# Optional: scale amplitude by normalized RSSI if available
-		if rssi is not None:
-			r_min = float(np.min(rssi))
-			r_max = float(np.max(rssi))
-			den = (r_max - r_min) if (r_max - r_min) != 0 else 1.0
-			rssi_norm = (rssi - r_min) / den
-			amp = amp * rssi_norm[:, None]
+		amp, phase = _load_amp_phase(path)
 
 		# Step 2: amplitude processing
 		if args.amp_log:
