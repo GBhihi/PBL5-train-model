@@ -19,8 +19,8 @@ from src.window import create_segments
 
 # --- 3. Đường dẫn file ---
 BASE_DIR = os.path.dirname(__file__)
-model_path = os.path.join(BASE_DIR, "../checkpoints_amp11/lstmcnn.pt")
-csv_path = os.path.join(BASE_DIR, "../data/raw/no_test1.csv")
+model_path = os.path.join(BASE_DIR, "../checkpoints_amp10/lstmcnn.pt")
+csv_path = os.path.join(BASE_DIR, "../data/raw/yes_test.csv")
 # --- 4. Load checkpoint trước để lấy metadata ---
 ckpt = torch.load(model_path, map_location=torch.device("cpu"), weights_only=False)
 
