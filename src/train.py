@@ -54,6 +54,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--config", default=None, help="Path to JSON config file")
 	parser.add_argument("--model-type", choices=["cnn2d", "lstmcnn"], default="cnn2d")
 	parser.add_argument("--data-csv", dest="data_csv", default=None, help="Path to merged CSV file (overrides sit/stand/walk)")
+	parser.add_argument("--data-csv-amp-phase", action="store_true", help="Interpret data_csv as interleaved I/Q with RSSI first col and label last, then compute amp/phase")
 	parser.add_argument("--window-size", type=int, default=4096)
 	parser.add_argument("--step", type=int, default=2048)
 	parser.add_argument("--cutoff", type=float, default=0.1)
@@ -188,6 +189,56 @@ def _read_merged_csv(path: str) -> tuple[np.ndarray, np.ndarray]:
 	return X, y
 
 
+def _read_merged_csv_iq(path: str) -> tuple[np.ndarray, np.ndarray]:
+	"""Read merged CSV as [RSSI, I/Q..., label]. Returns (iq_features, labels).
+
+	Rows with inconsistent feature lengths are dropped to the most common length.
+	"""
+	rows: list[list[float]] = []
+	labels: list[int] = []
+	with open(path, "r", newline="") as f:
+		reader = csv.reader(f)
+		for r in reader:
+			if not r:
+				continue
+			while len(r) > 1 and r[-1] == "":
+				r.pop()
+			while len(r) >= 2 and r[-2] == "":
+				r.pop(-2)
+			if len(r) < 3:
+				continue
+			*rss_iq, lab = r
+			parsed_feat = []
+			for v in rss_iq:
+				try:
+					parsed_feat.append(float(v))
+				except Exception:
+					parsed_feat.append(0.0)
+			try:
+				labels.append(int(float(lab)))
+			except Exception:
+				labels.append(-1)
+			rows.append(parsed_feat)
+	if not rows:
+		raise ValueError(f"No rows found in {path}")
+
+	from collections import Counter
+
+	lengths = [len(r) for r in rows]
+	most_common_len = Counter(lengths).most_common(1)[0][0]
+	filtered = [r for r in rows if len(r) == most_common_len]
+	filtered_labels = [lab for r, lab in zip(rows, labels) if len(r) == most_common_len]
+	if len(filtered) != len(rows):
+		print(
+			f"Warning: dropped {len(rows) - len(filtered)} rows with inconsistent length in {path}. "
+			f"Using length={most_common_len}."
+		)
+
+	X = np.array(filtered, dtype=np.float32)
+	y = np.array(filtered_labels, dtype=np.int64)
+	return X, y
+
+
 def _create_segments_from_labeled_rows(data: np.ndarray, labels: np.ndarray, window_size: int, step: int) -> tuple[np.ndarray, np.ndarray]:
 	"""Create sliding windows from time-series rows with per-row labels.
 
@@ -313,16 +364,47 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 
 		return combined
 
+	def _prepare_from_iq_rows(x_rows: np.ndarray) -> np.ndarray:
+		# drop RSSI column (first) and compute amp/phase from interleaved I/Q
+		if x_rows.shape[1] < 3:
+			raise ValueError("Not enough columns to compute I/Q amp/phase.")
+		csi = x_rows[:, 1:]
+		if csi.shape[1] % 2 != 0:
+			raise ValueError(
+				f"I/Q columns must be even, got {csi.shape[1]}. Check data_csv format."
+			)
+		amp, phase = amp_phase.compute_amplitude_phase(csi, interleaved=True)
+
+		if args.amp_log:
+			amp = np.log(amp + 1e-8)
+		amp_mu = np.mean(amp, axis=0, keepdims=True)
+		amp_sigma = np.std(amp, axis=0, keepdims=True) + 1e-8
+		amp_norm = (amp - amp_mu) / amp_sigma
+
+		phase_cos = np.cos(phase)
+		phase_sin = np.sin(phase)
+		combined = np.concatenate((amp_norm, phase_cos, phase_sin), axis=1)
+		return combined
+
 	# If merged CSV provided, load it and create labeled sliding windows
 	if getattr(args, 'data_csv', None):
 		data_csv_path = args.data_csv
 		print(f"Loading merged CSV: {data_csv_path}")
-		X_rows, row_labels = _read_merged_csv(data_csv_path)
-		# X_rows shape: (T, F)
-		# Apply cleaning along time axis
-		X_rows = _clean_raw_csi(X_rows, args.use_hampel, args.cutoff)
-		# Create segments from labeled rows; windows where labels within window differ are skipped
-		x, y = _create_segments_from_labeled_rows(X_rows, row_labels, window_size=args.window_size, step=args.step)
+		if getattr(args, "data_csv_amp_phase", False):
+			X_rows, row_labels = _read_merged_csv_iq(data_csv_path)
+			# Convert interleaved I/Q -> amp/phase combined features
+			X_rows = _prepare_from_iq_rows(X_rows)
+			X_rows = _clean_raw_csi(X_rows, args.use_hampel, args.cutoff)
+			x, y = _create_segments_from_labeled_rows(
+				X_rows, row_labels, window_size=args.window_size, step=args.step
+			)
+		else:
+			X_rows, row_labels = _read_merged_csv(data_csv_path)
+			# X_rows shape: (T, F)
+			# Apply cleaning along time axis
+			X_rows = _clean_raw_csi(X_rows, args.use_hampel, args.cutoff)
+			# Create segments from labeled rows; windows where labels within window differ are skipped
+			x, y = _create_segments_from_labeled_rows(X_rows, row_labels, window_size=args.window_size, step=args.step)
 	else:
 		# Always prepare data from amplitude/phase when separate files provided
 		sit = _prepare_from_amp_phase(args.sit_path)
