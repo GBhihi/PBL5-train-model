@@ -1,6 +1,6 @@
 {
   "model_type": "lstmcnn",
-  "data_csv": "data/raw/data3.csv",
+  "data_csv": "data/raw/data4.csv",
   "window_size": 4096,
   "step": 2048,
   "cutoff": 0.1,
