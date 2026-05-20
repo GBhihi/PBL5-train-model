@@ -16,7 +16,7 @@
   "scheduler": {"type": "ReduceLROnPlateau", "factor": 0.5, "patience": 3},
   "early_stopping": {"patience": 5, "monitor": "val_loss"},
   "dropout": 0.3,
-  "augmentation": {"noise_std": 0.01, "time_shift_pct": 0.1, "scale_min": 0.9, "scale_max": 1.1, "mixup_alpha": 0.2},
+  "augmentation": {},
   "output_dir": "experiments/results",
   "run_name": "baseline_lstm_cnn"
 }
