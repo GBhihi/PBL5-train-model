@@ -20,17 +20,9 @@ except Exception:
 from src.evaluate import evaluate_classification
 from src.model import build_model
 from src.preprocess import (
-	align_feature_dims_multi,
-	apply_hampel,
-	butterworth_lowpass,
-	load_csi_csv,
 	augment_training_set,
-	normalize_feature_lengths,
 )
 from src.spectrogram import convert_segments_to_spectrogram
-from src.window import create_segments
-from src import amp_phase
-from typing import Iterable, Tuple
 
 
 def _load_json_config(config_path: str | None) -> dict[str, object]:
@@ -53,11 +45,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 	parser = argparse.ArgumentParser(description="Train CSI activity recognition model")
 	parser.add_argument("--config", default=None, help="Path to JSON config file")
 	parser.add_argument("--model-type", choices=["cnn2d", "lstmcnn"], default="cnn2d")
-	parser.add_argument("--data-csv", dest="data_csv", default=None, help="Path to merged CSV file (overrides sit/stand/walk)")
-	parser.add_argument("--data-csv-amp-phase", action="store_true", help="Interpret data_csv as interleaved I/Q with RSSI first col and label last, then compute amp/phase")
+	parser.add_argument("--data-csv", dest="data_csv", default="data/raw/clean.csv", help="Path to clean CSV file where last column is label")
 	parser.add_argument("--window-size", type=int, default=4096)
 	parser.add_argument("--step", type=int, default=2048)
-	parser.add_argument("--cutoff", type=float, default=0.1)
 	parser.add_argument("--epochs", type=int, default=30)
 	parser.add_argument("--batch-size", type=int, default=32)
 	parser.add_argument("--test-size", type=float, default=0.2)
@@ -67,9 +57,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
 	parser.add_argument("--optimizer", default="AdamW", help="Optimizer name (AdamW or SGD)")
 	parser.add_argument("--weight-decay", type=float, default=0.0, help="Weight decay for optimizer")
 	parser.add_argument("--dropout", type=float, default=0.0, help="Dropout probability to pass to model")
-	# amp/phase processing is always enabled (phase encoded as sin/cos)
-	parser.add_argument("--amp-log", action="store_true", help="Apply log-scale to amplitude before normalization")
-	parser.add_argument("--use-hampel", action="store_true")
 	parser.add_argument("--learning-rate", type=float, default=1e-3)
 	parser.add_argument("--output-dir", default="experiments/results")
 	parser.add_argument("--run-name", default=None)
@@ -117,15 +104,6 @@ def _to_torch_input(x: np.ndarray, model_type: str) -> torch.Tensor:
 	return torch.from_numpy(x.astype(np.float32))
 
 
-def _clean_raw_csi(csi: np.ndarray, use_hampel: bool, cutoff: float) -> np.ndarray:
-	if use_hampel:
-		print("Applying Hampel filter...")
-		csi = apply_hampel(csi)
-	print("Applying Butterworth filter...")
-	csi = butterworth_lowpass(csi, cutoff=cutoff)
-	return csi
-
-
 def _finalize_segments_before_split(x: np.ndarray, model_type: str, nperseg: int) -> np.ndarray:
 	if model_type == "cnn2d":
 		print("Converting CSI segments to spectrogram...")
@@ -171,70 +149,20 @@ def _read_merged_csv(path: str) -> tuple[np.ndarray, np.ndarray]:
 	if not rows:
 		raise ValueError(f"No rows found in {path}")
 
-	# Check for inconsistent feature lengths. Normalize to target length 65 by
-	# truncating longer rows and padding shorter rows with zeros. This follows
-	# the dataset decision to treat len=65 as the canonical feature dimension.
+	# Keep only rows with the most common feature length.
 	lengths = [len(r) for r in rows]
-	unique_lengths = sorted(set(lengths))
-	if len(unique_lengths) > 1:
-		from collections import Counter
-
-		cnt = Counter(lengths)
-		summary = ", ".join([f"len={L}: {c}" for L, c in sorted(cnt.items())])
-		print(f"Warning: inconsistent feature lengths found in {path}: {summary}. Normalizing rows to len=65 (pad/truncate).")
-		rows = normalize_feature_lengths(rows, target_len=65)
-
-	X = np.array(rows, dtype=np.float32)
-	y = np.array(labels, dtype=np.int64)
-	return X, y
-
-
-def _read_merged_csv_iq(path: str) -> tuple[np.ndarray, np.ndarray]:
-	"""Read merged CSV as [RSSI, I/Q..., label]. Returns (iq_features, labels).
-
-	Rows with inconsistent feature lengths are dropped to the most common length.
-	"""
-	rows: list[list[float]] = []
-	labels: list[int] = []
-	with open(path, "r", newline="") as f:
-		reader = csv.reader(f)
-		for r in reader:
-			if not r:
-				continue
-			while len(r) > 1 and r[-1] == "":
-				r.pop()
-			while len(r) >= 2 and r[-2] == "":
-				r.pop(-2)
-			if len(r) < 3:
-				continue
-			*rss_iq, lab = r
-			parsed_feat = []
-			for v in rss_iq:
-				try:
-					parsed_feat.append(float(v))
-				except Exception:
-					parsed_feat.append(0.0)
-			try:
-				labels.append(int(float(lab)))
-			except Exception:
-				labels.append(-1)
-			rows.append(parsed_feat)
-	if not rows:
-		raise ValueError(f"No rows found in {path}")
-
 	from collections import Counter
 
-	lengths = [len(r) for r in rows]
 	most_common_len = Counter(lengths).most_common(1)[0][0]
-	filtered = [r for r in rows if len(r) == most_common_len]
+	filtered_rows = [r for r in rows if len(r) == most_common_len]
 	filtered_labels = [lab for r, lab in zip(rows, labels) if len(r) == most_common_len]
-	if len(filtered) != len(rows):
+	if len(filtered_rows) != len(rows):
 		print(
-			f"Warning: dropped {len(rows) - len(filtered)} rows with inconsistent length in {path}. "
+			f"Warning: dropped {len(rows) - len(filtered_rows)} rows with inconsistent length in {path}. "
 			f"Using length={most_common_len}."
 		)
 
-	X = np.array(filtered, dtype=np.float32)
+	X = np.array(filtered_rows, dtype=np.float32)
 	y = np.array(filtered_labels, dtype=np.int64)
 	return X, y
 
@@ -340,91 +268,15 @@ def _predict_proba(model: nn.Module, loader: DataLoader, device: torch.device) -
 
 
 def train(args: argparse.Namespace) -> dict[str, object]:
-	print("Loading CSI files...")
-	def _load_amp_phase(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
-		# use amp_phase.process_file_with_metadata to support interleaved or numeric complex CSVs
-		amp, phase, _metadata = amp_phase.process_file_with_metadata(path, metadata_columns=1, mode="auto")
-		return amp, phase
+	print("Loading clean dataset for training...")
+	data_csv_path = args.data_csv
+	print(f"Loading clean CSV: {data_csv_path}")
+	X_rows, row_labels = _read_merged_csv(data_csv_path)
 
-	def _prepare_from_amp_phase(path: str | Path) -> np.ndarray:
-		amp, phase = _load_amp_phase(path)
-
-		# Step 2: amplitude processing
-		if args.amp_log:
-			amp = np.log(amp + 1e-8)
-		# zero-mean, unit-variance per-subcarrier (time axis = 0)
-		amp_mu = np.mean(amp, axis=0, keepdims=True)
-		amp_sigma = np.std(amp, axis=0, keepdims=True) + 1e-8
-		amp_norm = (amp - amp_mu) / amp_sigma
-
-		# Step 3: phase processing (encode as sin/cos)
-		phase_cos = np.cos(phase)
-		phase_sin = np.sin(phase)
-		combined = np.concatenate((amp_norm, phase_cos, phase_sin), axis=1)
-
-		return combined
-
-	def _prepare_from_iq_rows(x_rows: np.ndarray) -> np.ndarray:
-		# drop RSSI column (first) and compute amp/phase from interleaved I/Q
-		if x_rows.shape[1] < 3:
-			raise ValueError("Not enough columns to compute I/Q amp/phase.")
-		csi = x_rows[:, 1:]
-		if csi.shape[1] % 2 != 0:
-			raise ValueError(
-				f"I/Q columns must be even, got {csi.shape[1]}. Check data_csv format."
-			)
-		amp, phase = amp_phase.compute_amplitude_phase(csi, interleaved=True)
-
-		if args.amp_log:
-			amp = np.log(amp + 1e-8)
-		amp_mu = np.mean(amp, axis=0, keepdims=True)
-		amp_sigma = np.std(amp, axis=0, keepdims=True) + 1e-8
-		amp_norm = (amp - amp_mu) / amp_sigma
-
-		phase_cos = np.cos(phase)
-		phase_sin = np.sin(phase)
-		combined = np.concatenate((amp_norm, phase_cos, phase_sin), axis=1)
-		return combined
-
-	# If merged CSV provided, load it and create labeled sliding windows
-	if getattr(args, 'data_csv', None):
-		data_csv_path = args.data_csv
-		print(f"Loading merged CSV: {data_csv_path}")
-		if getattr(args, "data_csv_amp_phase", False):
-			X_rows, row_labels = _read_merged_csv_iq(data_csv_path)
-			# Convert interleaved I/Q -> amp/phase combined features
-			X_rows = _prepare_from_iq_rows(X_rows)
-			X_rows = _clean_raw_csi(X_rows, args.use_hampel, args.cutoff)
-			x, y = _create_segments_from_labeled_rows(
-				X_rows, row_labels, window_size=args.window_size, step=args.step
-			)
-		else:
-			X_rows, row_labels = _read_merged_csv(data_csv_path)
-			# X_rows shape: (T, F)
-			# Apply cleaning along time axis
-			X_rows = _clean_raw_csi(X_rows, args.use_hampel, args.cutoff)
-			# Create segments from labeled rows; windows where labels within window differ are skipped
-			x, y = _create_segments_from_labeled_rows(X_rows, row_labels, window_size=args.window_size, step=args.step)
-	else:
-		# Always prepare data from amplitude/phase when separate files provided
-		sit = _prepare_from_amp_phase(args.sit_path)
-		stand = _prepare_from_amp_phase(args.stand_path)
-		walk = _prepare_from_amp_phase(args.walk_path)
-
-		# Align feature dimensions across all classes by truncating to smallest feature dim
-		sit, stand, walk = align_feature_dims_multi(sit, stand, walk)
-
-		sit = _clean_raw_csi(sit, args.use_hampel, args.cutoff)
-		stand = _clean_raw_csi(stand, args.use_hampel, args.cutoff)
-		walk = _clean_raw_csi(walk, args.use_hampel, args.cutoff)
-
-		x_sit, y_sit = create_segments(sit, 0, window_size=args.window_size, step=args.step)
-		x_stand, y_stand = create_segments(stand, 1, window_size=args.window_size, step=args.step)
-		# walk uses label index 2
-		x_walk, y_walk = create_segments(walk, 2, window_size=args.window_size, step=args.step)
-
-		x = np.vstack((x_sit, x_stand, x_walk))
-		y = np.hstack((y_sit, y_stand, y_walk))
+	# clean.csv is already preprocessed; only do sliding-window labeling for training.
+	x, y = _create_segments_from_labeled_rows(
+		X_rows, row_labels, window_size=args.window_size, step=args.step
+	)
 
 
 	x_train, x_val, y_train, y_val = train_test_split(
