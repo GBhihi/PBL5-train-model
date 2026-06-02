@@ -5,7 +5,7 @@ import csv
 import json
 from datetime import datetime
 from pathlib import Path
-
+from src.model import build_model
 import numpy as np
 from sklearn.model_selection import train_test_split
 import torch
@@ -45,7 +45,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 	parser = argparse.ArgumentParser(description="Train CSI activity recognition model")
 	parser.add_argument("--config", default=None, help="Path to JSON config file")
 	parser.add_argument("--model-type", choices=["cnn2d", "lstmcnn"], default="cnn2d")
-	parser.add_argument("--data-csv", dest="data_csv", default="data/raw/clean.csv", help="Path to clean CSV file where last column is label")
+	parser.add_argument("--data-csv", dest="data_csv", default="data/clean.csv", help="Path to clean CSV file where last column is label")
 	parser.add_argument("--window-size", type=int, default=4096)
 	parser.add_argument("--step", type=int, default=2048)
 	parser.add_argument("--epochs", type=int, default=30)
