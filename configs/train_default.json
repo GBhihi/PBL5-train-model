@@ -7,7 +7,7 @@
   "batch_size": 32,
   "test_size": 0.2,
   "random_state": 0,
-  "nperseg": 128,
+  "nperseg": 32,
   "learning_rate": 0.001,
   "optimizer": "AdamW",
   "weight_decay": 1e-4,
