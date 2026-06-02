@@ -193,6 +193,34 @@ def _create_segments_from_labeled_rows(data: np.ndarray, labels: np.ndarray, win
 	return np.array(x_list), np.array(y_list)
 
 
+def _split_indices_by_label(labels: np.ndarray, ratios: tuple[float, float, float], seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+	if not np.isclose(sum(ratios), 1.0):
+		raise ValueError(f"Split ratios must sum to 1.0, got {ratios}")
+
+	train_ratio, val_ratio, test_ratio = ratios
+	rng = np.random.default_rng(seed)
+
+	train_idx: list[int] = []
+	val_idx: list[int] = []
+	test_idx: list[int] = []
+
+	for label in np.unique(labels):
+		label_indices = np.where(labels == label)[0]
+		if label_indices.size == 0:
+			continue
+		rng.shuffle(label_indices)
+		n_total = label_indices.size
+		n_train = int(round(n_total * train_ratio))
+		n_val = int(round(n_total * val_ratio))
+		n_test = n_total - n_train - n_val
+
+		train_idx.extend(label_indices[:n_train].tolist())
+		val_idx.extend(label_indices[n_train : n_train + n_val].tolist())
+		test_idx.extend(label_indices[n_train + n_val : n_train + n_val + n_test].tolist())
+
+	return np.array(sorted(train_idx)), np.array(sorted(val_idx)), np.array(sorted(test_idx))
+
+
 def _fit_standardizer_3d(x_train: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 	if x_train.ndim == 3:
 		mu = np.mean(x_train, axis=(0, 1), keepdims=True)
@@ -273,18 +301,21 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	print(f"Loading clean CSV: {data_csv_path}")
 	X_rows, row_labels = _read_merged_csv(data_csv_path)
 
-	# clean.csv is already preprocessed; only do sliding-window labeling for training.
-	x, y = _create_segments_from_labeled_rows(
-		X_rows, row_labels, window_size=args.window_size, step=args.step
+	# Split rows by label (80/10/10), then create segments inside each split.
+	train_idx, val_idx, test_idx = _split_indices_by_label(
+		row_labels,
+		ratios=(0.8, 0.1, 0.1),
+		seed=args.random_state,
 	)
 
-
-	x_train, x_val, y_train, y_val = train_test_split(
-		x,
-		y,
-		test_size=args.test_size,
-		random_state=args.random_state,
-		stratify=y,
+	x_train, y_train = _create_segments_from_labeled_rows(
+		X_rows[train_idx], row_labels[train_idx], window_size=args.window_size, step=args.step
+	)
+	x_val, y_val = _create_segments_from_labeled_rows(
+		X_rows[val_idx], row_labels[val_idx], window_size=args.window_size, step=args.step
+	)
+	x_test, y_test = _create_segments_from_labeled_rows(
+		X_rows[test_idx], row_labels[test_idx], window_size=args.window_size, step=args.step
 	)
 
 
@@ -318,7 +349,12 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	for label, count in zip(labels_val, counts_val):
 		print(f"Label {label}: {count} samples")
 
-	print(f"Train shape: {x_train.shape}, Validation shape: {x_val.shape}")
+	labels_test, counts_test = np.unique(y_test, return_counts=True)
+	print("\nTest label distribution:")
+	for label, count in zip(labels_test, counts_test):
+		print(f"Label {label}: {count} samples")
+
+	print(f"Train shape: {x_train.shape}, Validation shape: {x_val.shape}, Test shape: {x_test.shape}")
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	print(f"Using device: {device}")
 	run_dir = _create_run_dir(args.output_dir, args.run_name, args.model_type)
@@ -326,8 +362,10 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 
 	x_train_tensor = _to_torch_input(x_train, args.model_type)
 	x_val_tensor = _to_torch_input(x_val, args.model_type)
+	x_test_tensor = _to_torch_input(x_test, args.model_type)
 	y_train_tensor = torch.from_numpy(y_train.astype(np.int64))
 	y_val_tensor = torch.from_numpy(y_val.astype(np.int64))
+	y_test_tensor = torch.from_numpy(y_test.astype(np.int64))
 
 	train_loader = DataLoader(
 		TensorDataset(x_train_tensor, y_train_tensor),
@@ -336,6 +374,11 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	)
 	val_loader = DataLoader(
 		TensorDataset(x_val_tensor, y_val_tensor),
+		batch_size=args.batch_size,
+		shuffle=False,
+	)
+	test_loader = DataLoader(
+		TensorDataset(x_test_tensor, y_test_tensor),
 		batch_size=args.batch_size,
 		shuffle=False,
 	)
@@ -449,10 +492,18 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	y_pred_prob = _predict_proba(model, val_loader, device)
 	result = evaluate_classification(y_val, y_pred_prob, labels=class_names)
 
+	y_test_prob = _predict_proba(model, test_loader, device)
+	test_result = evaluate_classification(y_test, y_test_prob, labels=class_names)
+
 	print("Confusion Matrix:")
 	print(result["confusion_matrix"])
 	print("\nClassification Report:")
 	print(result["classification_report"])
+
+	print("\nTest Confusion Matrix:")
+	print(test_result["confusion_matrix"])
+	print("\nTest Classification Report:")
+	print(test_result["classification_report"])
 
 	model_path = Path(args.save_model) if args.save_model else default_model_output_path(args.model_type)
 	best_epoch = int(np.argmin(history["val_loss"]) + 1)
@@ -481,20 +532,25 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	history_csv = run_dir / "history.csv"
 	report_txt = run_dir / "classification_report.txt"
 	cm_npy = run_dir / "confusion_matrix.npy"
+	cm_test_npy = run_dir / "confusion_matrix_test.npy"
+	report_test_txt = run_dir / "classification_report_test.txt"
 
 	with history_json.open("w", encoding="utf-8") as f:
 		json.dump(history, f, indent=2)
 	_save_history_csv(history, history_csv)
 	report_txt.write_text(str(result["classification_report"]), encoding="utf-8")
 	np.save(cm_npy, result["confusion_matrix"])
+	report_test_txt.write_text(str(test_result["classification_report"]), encoding="utf-8")
+	np.save(cm_test_npy, test_result["confusion_matrix"])
 
-	print(f"Saved logs: {history_csv}, {history_json}, {report_txt}, {cm_npy}")
+	print(f"Saved logs: {history_csv}, {history_json}, {report_txt}, {cm_npy}, {report_test_txt}, {cm_test_npy}")
 
 	return {
 		"model_path": str(model_path),
 		"run_dir": str(run_dir),
 		"history": history,
 		"metrics": result,
+		"test_metrics": test_result,
 	}
 
 
