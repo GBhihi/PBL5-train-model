@@ -193,12 +193,11 @@ def _create_segments_from_labeled_rows(data: np.ndarray, labels: np.ndarray, win
 	return np.array(x_list), np.array(y_list)
 
 
-def _split_indices_by_label(labels: np.ndarray, ratios: tuple[float, float, float], seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _split_indices_by_label_contiguous(labels: np.ndarray, ratios: tuple[float, float, float]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 	if not np.isclose(sum(ratios), 1.0):
 		raise ValueError(f"Split ratios must sum to 1.0, got {ratios}")
 
 	train_ratio, val_ratio, test_ratio = ratios
-	rng = np.random.default_rng(seed)
 
 	train_idx: list[int] = []
 	val_idx: list[int] = []
@@ -208,17 +207,17 @@ def _split_indices_by_label(labels: np.ndarray, ratios: tuple[float, float, floa
 		label_indices = np.where(labels == label)[0]
 		if label_indices.size == 0:
 			continue
-		rng.shuffle(label_indices)
+		label_indices = np.sort(label_indices)
 		n_total = label_indices.size
-		n_train = int(round(n_total * train_ratio))
-		n_val = int(round(n_total * val_ratio))
+		n_train = int(n_total * train_ratio)
+		n_val = int(n_total * val_ratio)
 		n_test = n_total - n_train - n_val
 
 		train_idx.extend(label_indices[:n_train].tolist())
 		val_idx.extend(label_indices[n_train : n_train + n_val].tolist())
 		test_idx.extend(label_indices[n_train + n_val : n_train + n_val + n_test].tolist())
 
-	return np.array(sorted(train_idx)), np.array(sorted(val_idx)), np.array(sorted(test_idx))
+	return np.array(train_idx), np.array(val_idx), np.array(test_idx)
 
 
 def _fit_standardizer_3d(x_train: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -302,10 +301,9 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	X_rows, row_labels = _read_merged_csv(data_csv_path)
 
 	# Split rows by label (80/10/10), then create segments inside each split.
-	train_idx, val_idx, test_idx = _split_indices_by_label(
+	train_idx, val_idx, test_idx = _split_indices_by_label_contiguous(
 		row_labels,
 		ratios=(0.8, 0.1, 0.1),
-		seed=args.random_state,
 	)
 
 	x_train, y_train = _create_segments_from_labeled_rows(
@@ -328,16 +326,19 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	# Finalize segments (e.g., convert to spectrogram for cnn2d) AFTER augmentation
 	x_train = _finalize_segments_before_split(x_train, args.model_type, args.nperseg)
 	x_val = _finalize_segments_before_split(x_val, args.model_type, args.nperseg)
+	x_test = _finalize_segments_before_split(x_test, args.model_type, args.nperseg)
 
 	print("Fitting standardizer on training set only...")
 	mu, sigma = _fit_standardizer_3d(x_train)
 	x_train = _apply_standardizer(x_train, mu, sigma)
 	x_val = _apply_standardizer(x_val, mu, sigma)
+	x_test = _apply_standardizer(x_test, mu, sigma)
 
 	print("Applying global normalization from training set only...")
 	max_abs = _fit_global_normalizer(x_train)
 	x_train = _apply_global_normalizer(x_train, max_abs)
 	x_val = _apply_global_normalizer(x_val, max_abs)
+	x_test = _apply_global_normalizer(x_test, max_abs)
 
 	labels, counts = np.unique(y_train, return_counts=True)
 	print("Train label distribution:")
