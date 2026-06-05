@@ -45,7 +45,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 	parser = argparse.ArgumentParser(description="Train CSI activity recognition model")
 	parser.add_argument("--config", default=None, help="Path to JSON config file")
 	parser.add_argument("--model-type", choices=["cnn2d", "lstmcnn"], default="cnn2d")
-	parser.add_argument("--data-csv", dest="data_csv", default="data/clean.csv", help="Path to clean CSV file where last column is label")
+	parser.add_argument(
+		"--data-csv",
+		dest="data_csv",
+		default="data/clean.csv",
+		help="Path to clean CSV file: features..., label, recording_id",
+	)
 	parser.add_argument("--window-size", type=int, default=2048)
 	parser.add_argument("--step", type=int, default=1024)
 	parser.add_argument("--epochs", type=int, default=30)
@@ -111,13 +116,16 @@ def _finalize_segments_before_split(x: np.ndarray, model_type: str, nperseg: int
 	return x
 
 
-def _read_merged_csv(path: str) -> tuple[np.ndarray, np.ndarray]:
-	"""Read merged CSV where last column is label. Returns (features, labels).
+def _read_merged_csv(path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+	"""Read clean CSV and return (features, labels, recording_ids).
 
-	Non-numeric or empty feature cells are filled with 0. Labels are cast to int.
+	New clean files use: feature columns..., label, recording_id.
+	Older clean files with only feature columns..., label are still supported and
+	get recording_id=0 for every row.
 	"""
 	rows: list[list[float]] = []
 	labels: list[int] = []
+	recording_ids: list[int] = []
 	with open(path, 'r', newline='') as f:
 		reader = csv.reader(f)
 		for r in reader:
@@ -127,14 +135,19 @@ def _read_merged_csv(path: str) -> tuple[np.ndarray, np.ndarray]:
 			# before the final label (handles patterns like "...,33,,0")
 			while len(r) > 1 and r[-1] == "":
 				r.pop()
-			# remove any empty cells directly before the last column (label)
+			# remove any empty cells directly before the last metadata column
 			while len(r) >= 2 and r[-2] == "":
 				r.pop(-2)
-			# last column should be label
 			if len(r) < 2:
-				# not enough columns (no features + label), skip
 				continue
-			*feat, lab = r
+
+			has_recording_id = len(r) >= 194
+			if has_recording_id:
+				*feat, lab, recording_id = r
+			else:
+				*feat, lab = r
+				recording_id = "0"
+
 			parsed_feat = []
 			for v in feat:
 				try:
@@ -145,6 +158,10 @@ def _read_merged_csv(path: str) -> tuple[np.ndarray, np.ndarray]:
 				labels.append(int(float(lab)))
 			except Exception:
 				labels.append(-1)
+			try:
+				recording_ids.append(int(float(recording_id)))
+			except Exception:
+				recording_ids.append(-1)
 			rows.append(parsed_feat)
 	if not rows:
 		raise ValueError(f"No rows found in {path}")
@@ -156,6 +173,7 @@ def _read_merged_csv(path: str) -> tuple[np.ndarray, np.ndarray]:
 	most_common_len = Counter(lengths).most_common(1)[0][0]
 	filtered_rows = [r for r in rows if len(r) == most_common_len]
 	filtered_labels = [lab for r, lab in zip(rows, labels) if len(r) == most_common_len]
+	filtered_recording_ids = [rid for r, rid in zip(rows, recording_ids) if len(r) == most_common_len]
 	if len(filtered_rows) != len(rows):
 		print(
 			f"Warning: dropped {len(rows) - len(filtered_rows)} rows with inconsistent length in {path}. "
@@ -164,13 +182,21 @@ def _read_merged_csv(path: str) -> tuple[np.ndarray, np.ndarray]:
 
 	X = np.array(filtered_rows, dtype=np.float32)
 	y = np.array(filtered_labels, dtype=np.int64)
-	return X, y
+	recording_ids_arr = np.array(filtered_recording_ids, dtype=np.int64)
+	return X, y, recording_ids_arr
 
 
-def _create_segments_from_labeled_rows(data: np.ndarray, labels: np.ndarray, window_size: int, step: int) -> tuple[np.ndarray, np.ndarray]:
+def _create_segments_from_labeled_rows(
+	data: np.ndarray,
+	labels: np.ndarray,
+	recording_ids: np.ndarray,
+	window_size: int,
+	step: int,
+) -> tuple[np.ndarray, np.ndarray]:
 	"""Create sliding windows from time-series rows with per-row labels.
 
-	A window is kept only if all label values inside the window are identical.
+	A window is kept only if all label and recording_id values inside the window
+	are identical.
 	"""
 	x_list: list[np.ndarray] = []
 	y_list: list[int] = []
@@ -178,22 +204,28 @@ def _create_segments_from_labeled_rows(data: np.ndarray, labels: np.ndarray, win
 	for start in range(0, length - window_size + 1, step):
 		end = start + window_size
 		window_labels = labels[start:end]
-		# if any -1 label (unknown) or mixed labels -> skip
+		window_recording_ids = recording_ids[start:end]
+		# if any -1 label/recording_id or mixed metadata -> skip
 		if window_labels.size == 0:
 			continue
-		if np.all(window_labels == window_labels[0]):
-			if window_labels[0] >= 0:
-				x_list.append(data[start:end])
-				y_list.append(int(window_labels[0]))
+		same_label = np.all(window_labels == window_labels[0]) and window_labels[0] >= 0
+		same_recording = np.all(window_recording_ids == window_recording_ids[0]) and window_recording_ids[0] >= 0
+		if same_label and same_recording:
+			x_list.append(data[start:end])
+			y_list.append(int(window_labels[0]))
 		else:
-			# mixed labels -> skip
+			# mixed label/recording_id -> skip
 			continue
 	if not x_list:
 		raise ValueError(f"No segments generated from labeled rows. Check window_size={window_size}, step={step}, data_length={length}")
 	return np.array(x_list), np.array(y_list)
 
 
-def _split_indices_by_label_contiguous(labels: np.ndarray, ratios: tuple[float, float, float]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _split_indices_by_label_recording_contiguous(
+	labels: np.ndarray,
+	recording_ids: np.ndarray,
+	ratios: tuple[float, float, float],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 	if not np.isclose(sum(ratios), 1.0):
 		raise ValueError(f"Split ratios must sum to 1.0, got {ratios}")
 
@@ -204,18 +236,24 @@ def _split_indices_by_label_contiguous(labels: np.ndarray, ratios: tuple[float, 
 	test_idx: list[int] = []
 
 	for label in np.unique(labels):
-		label_indices = np.where(labels == label)[0]
-		if label_indices.size == 0:
+		if label < 0:
 			continue
-		label_indices = np.sort(label_indices)
-		n_total = label_indices.size
-		n_train = int(n_total * train_ratio)
-		n_val = int(n_total * val_ratio)
-		n_test = n_total - n_train - n_val
+		label_recording_ids = np.unique(recording_ids[labels == label])
+		for recording_id in label_recording_ids:
+			if recording_id < 0:
+				continue
+			group_indices = np.where((labels == label) & (recording_ids == recording_id))[0]
+			if group_indices.size == 0:
+				continue
+			group_indices = np.sort(group_indices)
+			n_total = group_indices.size
+			n_train = int(n_total * train_ratio)
+			n_val = int(n_total * val_ratio)
+			n_test = n_total - n_train - n_val
 
-		train_idx.extend(label_indices[:n_train].tolist())
-		val_idx.extend(label_indices[n_train : n_train + n_val].tolist())
-		test_idx.extend(label_indices[n_train + n_val : n_train + n_val + n_test].tolist())
+			train_idx.extend(group_indices[:n_train].tolist())
+			val_idx.extend(group_indices[n_train : n_train + n_val].tolist())
+			test_idx.extend(group_indices[n_train + n_val : n_train + n_val + n_test].tolist())
 
 	return np.array(train_idx), np.array(val_idx), np.array(test_idx)
 
@@ -298,22 +336,39 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 	print("Loading clean dataset for training...")
 	data_csv_path = args.data_csv
 	print(f"Loading clean CSV: {data_csv_path}")
-	X_rows, row_labels = _read_merged_csv(data_csv_path)
+	X_rows, row_labels, row_recording_ids = _read_merged_csv(data_csv_path)
 
-	# Split rows by label (80/10/10), then create segments inside each split.
-	train_idx, val_idx, test_idx = _split_indices_by_label_contiguous(
+	# Split rows by each (label, recording_id) group (80/10/10), then create segments inside each split.
+	train_idx, val_idx, test_idx = _split_indices_by_label_recording_contiguous(
 		row_labels,
+		row_recording_ids,
 		ratios=(0.8, 0.1, 0.1),
+	)
+	print(
+		"Row split sizes:",
+		{"train": len(train_idx), "val": len(val_idx), "test": len(test_idx)},
 	)
 
 	x_train, y_train = _create_segments_from_labeled_rows(
-		X_rows[train_idx], row_labels[train_idx], window_size=args.window_size, step=args.step
+		X_rows[train_idx],
+		row_labels[train_idx],
+		row_recording_ids[train_idx],
+		window_size=args.window_size,
+		step=args.step,
 	)
 	x_val, y_val = _create_segments_from_labeled_rows(
-		X_rows[val_idx], row_labels[val_idx], window_size=args.window_size, step=args.step
+		X_rows[val_idx],
+		row_labels[val_idx],
+		row_recording_ids[val_idx],
+		window_size=args.window_size,
+		step=args.step,
 	)
 	x_test, y_test = _create_segments_from_labeled_rows(
-		X_rows[test_idx], row_labels[test_idx], window_size=args.window_size, step=args.step
+		X_rows[test_idx],
+		row_labels[test_idx],
+		row_recording_ids[test_idx],
+		window_size=args.window_size,
+		step=args.step,
 	)
 
 
