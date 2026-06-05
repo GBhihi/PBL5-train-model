@@ -51,8 +51,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 		default="data/clean.csv",
 		help="Path to clean CSV file: features..., label, recording_id",
 	)
-	parser.add_argument("--window-size", type=int, default=2048)
-	parser.add_argument("--step", type=int, default=1024)
+	parser.add_argument("--window-size", type=int, default=512)
+	parser.add_argument("--step", type=int, default=256)
 	parser.add_argument("--epochs", type=int, default=30)
 	parser.add_argument("--batch-size", type=int, default=32)
 	parser.add_argument("--test-size", type=float, default=0.2)
