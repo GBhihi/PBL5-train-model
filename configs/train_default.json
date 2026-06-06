@@ -1,8 +1,8 @@
 {
   "model_type": "lstmcnn",
   "data_csv": "data/clean.csv",
-  "window_size": 256,
-  "step": 128,
+  "window_size": 132,
+  "step": 66,
   "epochs": 40,
   "batch_size": 32,
   "test_size": 0.2,
@@ -12,7 +12,6 @@
   "optimizer": "AdamW",
   "weight_decay": 1e-4,
   "scheduler": {"type": "ReduceLROnPlateau", "factor": 0.5, "patience": 3},
-  "early_stopping": {"patience": 5, "monitor": "val_loss"},
   "dropout": 0.3,
   "augmentation": {},
   "output_dir": "experiments/results",
