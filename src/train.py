@@ -493,13 +493,6 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 
 	best_val_loss = float("inf")
 	best_state: dict[str, torch.Tensor] | None = None
-	# early stopping patience from config
-	es_cfg = getattr(args, "early_stopping", None)
-	if isinstance(es_cfg, dict):
-		patience = int(es_cfg.get("patience", 5))
-	else:
-		patience = 5
-	wait = 0
 
 	for epoch in range(1, args.epochs + 1):
 		train_loss, train_acc = _run_epoch(model, train_loader, criterion, optimizer, device)
@@ -525,13 +518,6 @@ def train(args: argparse.Namespace) -> dict[str, object]:
 		if val_loss < best_val_loss:
 			best_val_loss = val_loss
 			best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-			wait = 0
-		else:
-			if patience is not None:
-				wait += 1
-				if wait >= patience:
-					print("Early stopping triggered.")
-					break
 
 		# step scheduler if present
 		if scheduler is not None:
